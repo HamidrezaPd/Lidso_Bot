@@ -5,14 +5,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 
 from config import DATABASE_URL
 
-# تنظیمات pool فقط برای PostgreSQL معنا داره (SQLite واقعاً connection pool نداره).
-# pool_pre_ping جلوی خطای "connection قطع شده" رو می‌گیره اگه PostgreSQL بعد از یه مدت
-# بی‌کاری، کانکشن‌های idle رو خودش ببنده (رفتار پیش‌فرض خیلی از سرورهای PostgreSQL).
-_engine_kwargs = {"echo": False}
-if DATABASE_URL.startswith("postgresql"):
-    _engine_kwargs.update(pool_size=10, max_overflow=20, pool_pre_ping=True, pool_recycle=1800)
-
-engine = create_async_engine(DATABASE_URL, **_engine_kwargs)
+engine = create_async_engine(DATABASE_URL, echo=False)
 async_session = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 Base = declarative_base()
 

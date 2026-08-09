@@ -6,7 +6,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, MenuButtonCommands
 
-from config import BOT_TOKEN, PROXY_URL, LOG_LEVEL
+from config import BOT_TOKEN, PROXY_URL
 from database import init_db
 from seed_data import seed_defaults
 from ui_texts import seed_ui_texts
@@ -19,7 +19,7 @@ from handlers.admin import router as admin_router
 from handlers.trial import router as trial_router
 from middleware import ChannelMembershipMiddleware
 
-logging.basicConfig(level=getattr(logging, LOG_LEVEL.upper(), logging.INFO))
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 

@@ -35,7 +35,8 @@ DATABASE_URL = os.getenv(
 # Project
 # ===========================
 
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+DEBUG = True
+LOG_LEVEL = "INFO"
 TIMEZONE = "Asia/Tehran"
 
 # ===========================

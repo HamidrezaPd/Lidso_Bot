@@ -99,70 +99,14 @@ DATABASE_URL=sqlite+aiosqlite:///lidso_database.db
 
 ---
 
-## مرحله ۲: روی سرور واقعی (Ubuntu 24.04)
+## مرحله ۲: وقتی سرور واقعی گرفتی
 
-### نصب PostgreSQL روی سرور
+وقتی سرور لینوکس (پیشنهادم Ubuntu 22.04 LTS) رو گرفتی، به من بگو دقیقاً چه چیزی
+داری (رم، مشخصات، دسترسی SSH) تا مرحله‌به‌مرحله راهنماییت کنم برای:
+- نصب PostgreSQL روی سرور
+- انتقال امن دیتابیس (از سیستم خودت یا از صفر)
+- تنظیم ربات به‌عنوان سرویس دائمی (systemd) که با ریبوت سرور هم خودش بالا بیاد
+- تنظیم فایروال و امنیت پایه‌ای سرور
 
-```bash
-sudo apt update
-sudo apt install postgresql postgresql-contrib -y
-sudo systemctl enable postgresql
-sudo systemctl start postgresql
-```
-
-### ساخت دیتابیس و کاربر
-
-```bash
-sudo -u postgres psql
-```
-```sql
-CREATE DATABASE lidso_db;
-CREATE USER lidso_user WITH PASSWORD 'یک-پسورد-قوی-و-واقعی';
-GRANT ALL PRIVILEGES ON DATABASE lidso_db TO lidso_user;
-\q
-```
-
-### انتقال پروژه و دیتابیس فعلی به سرور
-
-از سیستم خودت (جایی که فعلاً SQLite داری):
-
-```bash
-scp -r Lidso_Bot/ user@SERVER_IP:/home/lidsobot/
-scp lidso_database.db user@SERVER_IP:/home/lidsobot/Lidso_Bot/
-```
-
-روی سرور، پکیج‌ها رو نصب کن و اسکریپت مهاجرت رو اجرا کن (دقیقاً مثل مرحله‌ی ۱، فقط
-این بار روی سرور و با آدرس PostgreSQL محلی سرور):
-
-```bash
-cd /home/lidsobot/Lidso_Bot
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-python migrate_sqlite_to_postgres.py \
-    --sqlite-path lidso_database.db \
-    --postgres-url "postgresql+asyncpg://lidso_user:PASSWORD@localhost:5432/lidso_db"
-```
-
-### تنظیم `.env` روی سرور
-
-از `.env.example` کپی کن، پر کن، و مطمئن شو:
-```
-PROXY_URL=
-DATABASE_URL=postgresql+asyncpg://lidso_user:PASSWORD@localhost:5432/lidso_db
-```
-(`PROXY_URL` رو خالی بذار - سرور خارج فیلتر نیست، نیازی به پروکسی نداره.)
-
-### اجرای دائمی با systemd
-
-برای اینکه ربات همیشه روشن بمونه، با ریبوت سرور خودش بالا بیاد، و اگه crash کرد
-خودکار دوباره اجرا بشه، مراحل کامل توی `DEPLOY_UBUNTU.md` هست.
-
----
-
-## چک‌لیست امنیتی سرور (پیشنهادی)
-- فایروال: فقط پورت SSH و هرچی که واقعاً لازمه باز بمونه (`sudo ufw allow OpenSSH && sudo ufw enable`)
-- کاربر جدا (نه root) برای اجرای ربات
-- پسورد قوی برای کاربر PostgreSQL
-- آپدیت‌های امنیتی سیستم‌عامل رو خودکار فعال کن (`unattended-upgrades`)
+فقط با تغییر `DATABASE_URL` و اجرای `migrate_sqlite_to_postgres.py` روی سرور
+(یا انتقال فایل SQLite به سرور و اجرای اسکریپت اونجا)، کل کار تمومه.
