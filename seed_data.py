@@ -46,17 +46,40 @@ async def _migrate_category_durations(session):
 
 async def seed_defaults():
     async with async_session() as session:
-        existing_menu = await session.scalar(select(MenuButton).limit(1))
-        if not existing_menu:
-            keys = [
-                "btn_buy", "btn_tariffs", "btn_free_trial", "btn_my_services", "btn_wallet",
-                "btn_profile", "btn_invite", "btn_guide", "btn_support",
-            ]
+        # منوی پیش‌فرض را به‌صورت idempotent seed کن:
+        # وجود یک دکمه به معنی کامل بودن منو نیست. هر کلید مستقل بررسی می‌شود
+        # و فقط دکمه‌های missing اضافه می‌شوند؛ تنظیمات دکمه‌های موجود دست‌نخورده می‌ماند.
+        default_menu = [
+            "btn_buy", "btn_tariffs", "btn_free_trial", "btn_my_services", "btn_wallet",
+            "btn_profile", "btn_invite", "btn_guide", "btn_support",
+        ]
+        existing_menu_rows = (
+            await session.execute(
+                select(MenuButton).where(
+                    MenuButton.key.in_(default_menu),
+                    MenuButton.is_custom == False,
+                )
+            )
+        ).scalars().all()
+        existing_menu_keys = {row.key for row in existing_menu_rows}
+
+        missing_menu = [
+            (i, key)
+            for i, key in enumerate(default_menu)
+            if key not in existing_menu_keys
+        ]
+        if missing_menu:
             session.add_all([
-                MenuButton(key=k, is_custom=False, sort_order=i, enabled=True,
-                           full_width=(k == "btn_free_trial"))
-                for i, k in enumerate(keys)
+                MenuButton(
+                    key=key,
+                    is_custom=False,
+                    sort_order=sort_order,
+                    enabled=True,
+                    full_width=(key == "btn_free_trial"),
+                )
+                for sort_order, key in missing_menu
             ])
+            await session.flush()
 
         existing_cat = await session.scalar(select(Category).limit(1))
         if not existing_cat:
