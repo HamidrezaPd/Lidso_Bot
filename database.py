@@ -26,7 +26,7 @@ class User(Base):
     total_unlimited_purchases = Column(Integer, default=0)
     # تعداد خریدهای حجم نامحدود (پلن‌هایی که volume_gb=0 دارن) - جدا از حجم گیگابایتی
     total_spent = Column(Float, default=0.0)
-    joined_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    joined_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     used_free_trial = Column(Boolean, default=False)
     # آیا این کاربر قبلاً یه‌بار از تست رایگان استفاده کرده. ادمین می‌تونه از توی بات، این فلگ
@@ -59,7 +59,7 @@ class Panel(Base):
     # تگ اینباند(های) همون پروتکل، با کاما جدا (مثلا "VLESS TCP" یا چند تا با کاما). فقط برای
     # پنل‌هایی که به روش proxies/inbounds کار می‌کنن (مثل Marzban استاندارد/MMD) لازمه.
     active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     submerge_enabled = Column(Boolean, default=False)
     # آیا سرویس‌هایی که با این پنل خاص ساخته میشن باید از ادغام ساب (PhantomHubs) عبور کنن.
     # مستقل از تنظیمات global ادغام ساب - هر دو باید فعال باشن تا واقعاً اعمال بشه.
@@ -134,7 +134,7 @@ class TrialPlan(Base):
     hwid_limit = Column(Integer, default=0)
     sort_order = Column(Integer, default=0)
     active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class StockConfig(Base):
@@ -150,8 +150,8 @@ class StockConfig(Base):
     status = Column(String, default="AVAILABLE")
     # AVAILABLE | SOLD
     assigned_user = Column(BigInteger, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    sold_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    sold_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class DiscountCode(Base):
@@ -171,7 +171,7 @@ class UsedDiscount(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(BigInteger, nullable=False)
     code = Column(String, nullable=False)
-    used_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    used_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class ServiceOrder(Base):
@@ -198,10 +198,10 @@ class ServiceOrder(Base):
     phantom_token = Column(String, nullable=True)
     # توکنی که برای این سرویس توی PhantomHubs ثبت شد - برای حذف بعدی نیاز داریم
 
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    expire_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expire_at = Column(DateTime(timezone=True), nullable=True)
     renew_notified = Column(Boolean, default=False)
-    renew_notified_at = Column(DateTime, nullable=True)
+    renew_notified_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class AdminLog(Base):
@@ -210,7 +210,7 @@ class AdminLog(Base):
     id = Column(Integer, primary_key=True)
     admin_id = Column(BigInteger, nullable=False)
     action = Column(String, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class BotContent(Base):
@@ -248,7 +248,7 @@ class WalletTransaction(Base):
     receipt_file_id = Column(String, nullable=True)
     description = Column(String, nullable=True)
     handled_by = Column(BigInteger, nullable=True)
-    expires_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
     # مهلت پرداخت (برای AWAITING_RECEIPT) - بعد از این زمان دیگه معتبر نیست
     gateway_invoice_uid = Column(String, nullable=True)
     # آیدی فاکتور HooshPay - برای چک کردن وضعیت پرداخت
@@ -257,7 +257,7 @@ class WalletTransaction(Base):
     expire_notified = Column(Boolean, default=False)
     # آیا پیام «مهلت پرداخت تموم شد» برای این تراکنش قبلاً ارسال شده (جلوگیری از ارسال تکراری)
 
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class MenuButton(Base):
@@ -335,7 +335,7 @@ class Referral(Base):
     inviter_id = Column(BigInteger, nullable=False)
     invited_id = Column(BigInteger, nullable=False)
     reward_given = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 async def _add_column_if_missing(conn, table: str, column: str, coltype: str = "TEXT"):
