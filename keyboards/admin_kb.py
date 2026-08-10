@@ -63,6 +63,15 @@ def tx_approve_kb(tx_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def tx_reject_reason_kb(tx_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text="↪️ رد بدون توضیح", callback_data=f"tx_reject_skip_{tx_id}"),
+            InlineKeyboardButton(text="❌ لغو", callback_data=f"tx_reject_cancel_{tx_id}"),
+        ]]
+    )
+
+
 def admin_plans_list_kb(plans, action_prefix):
     """plans: لیست ServicePlan - برای هرکدوم یه دکمه با callback_data مثل addstock_12"""
     rows = []

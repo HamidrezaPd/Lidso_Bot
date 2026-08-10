@@ -52,7 +52,7 @@ async def register_user_if_needed(bot, user_id: int, username: str, full_name: s
                 if inviter:
                     session.add(Referral(inviter_id=inviter_id, invited_id=user_id))
                     inviter.referral_count += 1
-                    reward_ready = inviter.referral_count % cfg.REFERRAL_NEEDED_COUNT == 0
+                    reward_ready = inviter.referral_count == max(int(cfg.REFERRAL_NEEDED_COUNT), 1)
                     if reward_ready:
                         inviter.balance += cfg.REFERRAL_BONUS_AMOUNT
                         session.add(WalletTransaction(
@@ -65,18 +65,23 @@ async def register_user_if_needed(bot, user_id: int, username: str, full_name: s
                     try:
                         invited_name = f"@{username}" if username else (full_name or "کاربر جدید")
                         needed = max(int(cfg.REFERRAL_NEEDED_COUNT), 1)
-                        remaining = needed - (inviter.referral_count % needed)
-                        bonus_line = (
-                            f"💰 پاداش {cfg.REFERRAL_BONUS_AMOUNT:,} تومان به کیف پول شما اضافه شد.\n"
-                            if reward_ready else ""
-                        )
+                        if reward_ready:
+                            progress_line = (
+                                f"💰 پاداش {cfg.REFERRAL_BONUS_AMOUNT:,} تومان به کیف پول شما اضافه شد.\n"
+                                f"🎁 سهمیه دعوت شما تکمیل شد و پاداش فعال شد."
+                            )
+                        elif inviter.referral_count >= needed:
+                            progress_line = "🎁 پاداش دعوت شما قبلاً فعال شده است."
+                        else:
+                            remaining = needed - inviter.referral_count
+                            progress_line = f"🎯 تا شارژ بعدی: {remaining} نفر"
+
                         await bot.send_message(
                             inviter_id,
                             f"🎉 کاربر جدید با لینک دعوت شما وارد ربات شد!\n\n"
                             f"👤 کاربر: {invited_name}\n"
                             f"👥 تعداد دعوت‌های شما: {inviter.referral_count} نفر\n"
-                            f"{bonus_line}"
-                            f"🎯 تا شارژ بعدی: {remaining} نفر"
+                            f"{progress_line}"
                         )
                     except Exception:
                         pass
@@ -187,13 +192,17 @@ async def referral_handler(message: Message):
         referral_count = user.referral_count if user else 0
 
     needed = max(int(cfg.REFERRAL_NEEDED_COUNT), 1)
-    remaining = needed - (referral_count % needed)
+    if referral_count >= needed:
+        progress_text = "🎁 پاداش دعوت شما فعال شده است."
+    else:
+        remaining = needed - referral_count
+        progress_text = f"🎯 تعداد باقی‌مانده تا شارژ بعدی: {remaining} نفر"
 
     text = (
         f"👥 برنامه دعوت از دوستان\n\n"
         f"👤 تعداد دعوت‌شده‌ها: {referral_count} نفر\n"
-        f"🎯 تعداد باقی‌مانده تا شارژ بعدی: {remaining} نفر\n"
-        f"💰 پاداش هر {needed} دعوت: {cfg.REFERRAL_BONUS_AMOUNT:,} تومان\n\n"
+        f"{progress_text}\n"
+        f"💰 پاداش {needed} دعوت: {cfg.REFERRAL_BONUS_AMOUNT:,} تومان\n\n"
         f"با اشتراک‌گذاری لینک زیر، دوستانت رو دعوت کن و با رسیدن به {needed} دعوت، "
         f"کیف پولت {cfg.REFERRAL_BONUS_AMOUNT:,} تومان شارژ میشه.\n\n"
         f"🔗 لینک اختصاصی شما:\n`{ref_link}`"

@@ -130,6 +130,10 @@ class WalletAdjustStates(StatesGroup):
     waiting_note = State()
 
 
+class RejectReceiptStates(StatesGroup):
+    waiting_reason = State()
+
+
 class DeliverStates(StatesGroup):
     waiting_config_name = State()
     waiting_config_link = State()

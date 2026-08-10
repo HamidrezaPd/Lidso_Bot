@@ -11,7 +11,7 @@ from database import (
 from keyboards.admin_kb import (
     admin_main_menu_kb, back_to_admin_main_kb, admin_plans_list_kb,
     confirm_broadcast_kb, admin_categories_kb,
-    categories_pick_kb, delivery_mode_kb, users_list_kb,
+    categories_pick_kb, delivery_mode_kb, users_list_kb, tx_reject_reason_kb,
 )
 from panels import get_next_config_name, volume_tag_from_plan, delete_panel_account
 from states.admin_states import (
@@ -20,7 +20,7 @@ from states.admin_states import (
     CategoryAddStates, PlanAddStates, MenuEditStates, FindUserStates,
     SubMergeStates, MessageUserStates, WalletAdjustStates, PanelGroupsStates, PanelMarzbanStates,
     CategoryDurationStates, GatewayConfigStates, CryptoConfigStates, TrialAddStates, TrialEditStates,
-    UserSearchStates,
+    UserSearchStates, RejectReceiptStates,
 )
 import config as cfg
 
@@ -2114,34 +2114,92 @@ async def cb_tx_approve(callback: CallbackQuery):
     await callback.answer("تایید شد ✅")
 
 
-@router.callback_query(F.data.startswith("tx_reject_"))
-async def cb_tx_reject(callback: CallbackQuery):
+@router.callback_query(F.data.regexp(r"^tx_reject_\d+$"))
+async def cb_tx_reject(callback: CallbackQuery, state: FSMContext):
     tx_id = int(callback.data.split("_")[-1])
     async with async_session() as session:
         tx = await session.get(WalletTransaction, tx_id)
         if not tx or tx.status != "PENDING":
             await callback.answer("این تراکنش قبلاً پردازش شده.", show_alert=True)
             return
+
+    await state.update_data(reject_tx_id=tx_id)
+    await state.set_state(RejectReceiptStates.waiting_reason)
+    await callback.message.answer(
+        "✏️ دلیل رد کردن رسید را ارسال کنید.\n\n"
+        "اگر نمی‌خواهید توضیحی برای کاربر ارسال شود، گزینه «رد بدون توضیح» را بزنید.",
+        reply_markup=tx_reject_reason_kb(tx_id),
+    )
+    await callback.answer("دلیل رد رسید را وارد کنید.")
+
+
+@router.callback_query(F.data.startswith("tx_reject_skip_"))
+async def cb_tx_reject_skip(callback: CallbackQuery, state: FSMContext):
+    tx_id = int(callback.data.split("_")[-1])
+    await _reject_transaction(callback, state, tx_id, None)
+
+
+@router.callback_query(F.data.startswith("tx_reject_cancel_"))
+async def cb_tx_reject_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.answer("لغو شد.")
+
+
+@router.message(RejectReceiptStates.waiting_reason, F.text)
+async def reject_receipt_reason(message: Message, state: FSMContext):
+    data = await state.get_data()
+    tx_id = data.get("reject_tx_id")
+    if not tx_id:
+        await state.clear()
+        return
+    reason = message.text.strip()
+    if reason.lower() in {"بدون توضیح", "بدون توضیح.", "skip", "/skip"}:
+        reason = None
+    await _reject_transaction(message, state, int(tx_id), reason)
+
+
+async def _reject_transaction(source, state: FSMContext, tx_id: int, reason: str | None):
+    async with async_session() as session:
+        tx = await session.get(WalletTransaction, tx_id)
+        if not tx or tx.status != "PENDING":
+            await state.clear()
+            if isinstance(source, CallbackQuery):
+                await source.answer("این تراکنش قبلاً پردازش شده.", show_alert=True)
+            else:
+                await source.answer("این تراکنش قبلاً پردازش شده.")
+            return
         tx.status = "REJECTED"
-        tx.handled_by = callback.from_user.id
-        await session.commit()
+        tx.handled_by = source.from_user.id
         target_user = tx.user_id
+        await session.commit()
 
     try:
-        if callback.message.photo:
-            await callback.message.edit_caption(caption=(callback.message.caption or "") + "\n\n❌ رد شد")
-        else:
-            await callback.message.edit_text((callback.message.text or "") + "\n\n❌ رد شد")
+        admin_message = source.message if isinstance(source, CallbackQuery) else None
+        if admin_message and admin_message.photo:
+            await admin_message.edit_caption(caption=(admin_message.caption or "") + "\n\n❌ رد شد")
+        elif admin_message:
+            await admin_message.edit_text((admin_message.text or "") + "\n\n❌ رد شد")
     except Exception:
         pass
 
+    user_text = "❌ متاسفانه رسید واریزی شما تایید نشد. لطفاً با پشتیبانی در ارتباط باشید."
+    if reason:
+        user_text += f"\n\n📝 دلیل رد: {reason}"
+
     try:
-        await callback.bot.send_message(
-            target_user, "❌ متاسفانه رسید واریزی شما تایید نشد. لطفاً با پشتیبانی تماس بگیرید."
-        )
+        await source.bot.send_message(target_user, user_text)
     except Exception:
         pass
-    await callback.answer("رد شد ❌")
+
+    await state.clear()
+    if isinstance(source, CallbackQuery):
+        await source.answer("رد شد ❌")
+    else:
+        await source.answer("رسید رد شد ❌")
 
 
 # ==================== تحویل دستی سفارش‌ها ====================
