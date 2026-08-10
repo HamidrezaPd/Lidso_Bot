@@ -28,21 +28,18 @@ TOKEN_TTL_SECONDS = 20 * 60
 
 def _fix_subscription_link(panel: Panel, raw_link: str) -> str:
     """
-    خیلی از پنل‌ها لینک ساب رو با یه دامنه‌ی داخلی/اشتباه (مثلا IP لوکال یا دامنه‌ای که
-    خودِ پنل نادرست تنظیم کرده) برمی‌گردونن، نه دامنه‌ی واقعی که بهش وصل شدیم. برای
-    جلوگیری از فرستادن لینک خراب به مشتری، همیشه لینک رو با دامنه‌ی مطمئنِ خودِ panel.url
-    (همونی که موقع افزودن پنل وارد کردی) دوباره می‌سازیم.
+    لینک اشتراک را فقط در صورت نیاز اصلاح می‌کند.
+
+    PasarGuard ممکن است لینک subscription را از دامنه‌ای جدا از دامنه پنل
+    (مثلاً api.rain.fail) برگرداند. این دامنه بخشی از لینک واقعی اشتراک است
+    و نباید با panel.url (مثلاً p.rain.rest) جایگزین شود. بنابراین برای URLهای
+    کامل، همان لینک برگشتی از پنل را حفظ می‌کنیم.
     """
     if not raw_link:
         return raw_link
     if raw_link.startswith(("vless://", "vmess://", "trojan://", "ss://")):
-        return raw_link  # این‌ها لینک کانفیگ مستقیمن، نه ساب - دست نمی‌زنیم
-
-    parsed = urlparse(raw_link)
-    path_and_query = parsed.path + (("?" + parsed.query) if parsed.query else "")
-    if not path_and_query.startswith("/"):
-        path_and_query = "/" + path_and_query
-    return f"{panel.url.rstrip('/')}{path_and_query}"
+        return raw_link
+    return raw_link
 
 
 async def _marzban_list_usernames(panel: Panel, prefix: str) -> list[str]:
