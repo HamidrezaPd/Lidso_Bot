@@ -74,7 +74,6 @@ async def register_user_if_needed(bot, user_id: int, username: str, full_name: s
                             inviter_id,
                             f"🎉 کاربر جدید با لینک دعوت شما وارد ربات شد!\n\n"
                             f"👤 کاربر: {invited_name}\n"
-                            f"🆔 آیدی عددی: {user_id}\n\n"
                             f"👥 تعداد دعوت‌های شما: {inviter.referral_count} نفر\n"
                             f"{bonus_line}"
                             f"🎯 تا شارژ بعدی: {remaining} نفر"
