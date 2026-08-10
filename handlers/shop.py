@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-async def get_content(session, key, default="", **variables):
-    from ui_texts import get_managed_text
-    return await get_managed_text(key, default, **variables)
+async def get_content(session, key, default=""):
+    val = await session.scalar(select(BotContent.value).where(BotContent.key == key))
+    return val or default
 
 
 # ==================== ناوبری ====================
@@ -117,18 +117,20 @@ async def _notify_admins(bot, text):
             pass
 
 
-async def _notify_admins_manual_order(bot, order_id, plan_name, user_id, extra=""):
+async def _notify_admins_manual_order(bot, order_id, plan_name, user_id, username=None, full_name=None, extra=""):
+    uname = f"@{username}" if username else "بدون یوزرنیم"
     await _notify_admins(
         bot,
         f"🆕 سفارش نیازمند تحویل دستی\n\n"
         f"شماره سفارش: #{order_id}\n"
         f"سرویس: {plan_name}\n"
-        f"کاربر: {user_id}\n"
+        f"🆔 آیدی عددی: {user_id}\n"
+        f"✏️ یوزرنیم: {uname}\n"
+        f"👤 نام: {full_name or '-'}\n"
         f"{extra}\n\n"
         f"برای تحویل از دستور زیر استفاده کنید:\n"
         f"/deliver_{order_id}"
     )
-
 
 @router.message(ShopStates.choosing_plan)
 async def process_purchase(message: Message, state: FSMContext):
@@ -241,7 +243,7 @@ async def process_purchase(message: Message, state: FSMContext):
                 f"⏳ سرویس شما به زودی توسط پشتیبانی به صورت دستی تحویل داده می‌شود.",
                 reply_markup=await main_keyboard(),
             )
-            await _notify_admins_manual_order(message.bot, order.id, plan.name, user_id)
+            await _notify_admins_manual_order(message.bot, order.id, plan.name, user_id, message.from_user.username, message.from_user.full_name)
             await state.clear()
             return
 
@@ -311,7 +313,7 @@ async def process_purchase(message: Message, state: FSMContext):
                     reply_markup=await main_keyboard(),
                 )
                 await _notify_admins_manual_order(
-                    message.bot, order.id, plan.name, user_id,
+                    message.bot, order.id, plan.name, user_id, message.from_user.username, message.from_user.full_name,
                     extra=f"⚠️ دلیل نیاز به تحویل دستی: {build_error}"
                 )
                 await state.clear()
@@ -349,7 +351,10 @@ async def process_purchase(message: Message, state: FSMContext):
         await _notify_admins(
             message.bot,
             f"🛒 خرید جدید انجام شد\n\n"
-            f"کاربر: {user_id}\nسرویس: {plan_name}\nقیمت: {final_price:,} تومان\n"
+            f"🆔 آیدی عددی: {user_id}\n"
+            f"✏️ یوزرنیم: @{message.from_user.username if message.from_user.username else 'بدون یوزرنیم'}\n"
+            f"👤 نام: {message.from_user.full_name}\n"
+            f"سرویس: {plan_name}\nقیمت: {final_price:,} تومان\n"
             f"نام کانفیگ: {order.config_name}\nشماره سفارش: #{order.id}",
         )
 

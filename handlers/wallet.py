@@ -416,7 +416,9 @@ async def card_pay_receipt(message: Message, state: FSMContext):
                 caption=(
                     f"🧾 رسید واریز جدید\n\n"
                     f"شماره تراکنش: #{tx_id}\n"
-                    f"کاربر: {user_id}\n"
+                    f"🆔 آیدی عددی: {user_id}\n"
+                    f"✏️ یوزرنیم: @{message.from_user.username if message.from_user.username else 'بدون یوزرنیم'}\n"
+                    f"👤 نام: {message.from_user.full_name}\n"
                     f"مبلغ: {amount:,} تومان"
                 ),
                 reply_markup=tx_approve_kb(tx_id),
@@ -549,7 +551,7 @@ async def crypto_pay_amount(message: Message, state: FSMContext):
     await _notify_admins(
         message.bot,
         f"🪙 شروع پرداخت ارزی جدید\n\n"
-        f"کاربر: {message.from_user.id}\nروش: {unit}\nمبلغ: {amount:,} تومان "
+        f"🆔 آیدی عددی: {message.from_user.id}\n✏️ یوزرنیم: @{message.from_user.username if message.from_user.username else 'بدون یوزرنیم'}\n👤 نام: {message.from_user.full_name}\nروش: {unit}\nمبلغ: {amount:,} تومان "
         f"({crypto_amount} {unit})\nشماره تراکنش: #{tx.id}\nوضعیت: در انتظار واریز کاربر",
     )
 
@@ -592,7 +594,7 @@ async def crypto_check_cb(callback: CallbackQuery):
     await _notify_admins(
         callback.bot,
         f"✅ پرداخت ارزی تکمیل شد\n\n"
-        f"کاربر: {tx.user_id}\nروش: {unit}\nمبلغ: {tx.amount:,} تومان\nشماره تراکنش: #{tx.id}",
+        f"🆔 آیدی عددی: {tx.user_id}\n✏️ یوزرنیم: @{user.username if user.username else 'بدون یوزرنیم'}\n👤 نام: {user.full_name}\nروش: {unit}\nمبلغ: {tx.amount:,} تومان\nشماره تراکنش: #{tx.id}",
     )
 
 
@@ -671,7 +673,7 @@ async def gateway_amount_in(message: Message, state: FSMContext):
     await _notify_admins(
         message.bot,
         f"🌐 شروع پرداخت از درگاه جدید\n\n"
-        f"کاربر: {user_id}\nروش: درگاه پرداخت (HooshPay)\nمبلغ: {amount:,} تومان\n"
+        f"🆔 آیدی عددی: {user_id}\n✏️ یوزرنیم: @{message.from_user.username if message.from_user.username else 'بدون یوزرنیم'}\n👤 نام: {message.from_user.full_name}\nروش: درگاه پرداخت (HooshPay)\nمبلغ: {amount:,} تومان\n"
         f"شماره تراکنش: #{tx.id}\nوضعیت: در انتظار پرداخت کاربر",
     )
 
@@ -713,7 +715,7 @@ async def gateway_check_cb(callback: CallbackQuery):
     await _notify_admins(
         callback.bot,
         f"✅ پرداخت از درگاه تکمیل شد\n\n"
-        f"کاربر: {tx.user_id}\nروش: درگاه پرداخت (HooshPay)\nمبلغ: {tx.amount:,} تومان\n"
+        f"🆔 آیدی عددی: {tx.user_id}\n✏️ یوزرنیم: @{user.username if user.username else 'بدون یوزرنیم'}\n👤 نام: {user.full_name}\nروش: درگاه پرداخت (HooshPay)\nمبلغ: {tx.amount:,} تومان\n"
         f"شماره تراکنش: #{tx.id}",
     )
 

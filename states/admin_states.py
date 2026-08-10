@@ -67,6 +67,10 @@ class FindUserStates(StatesGroup):
     waiting_user_id = State()
 
 
+class UserSearchStates(StatesGroup):
+    waiting_user_id = State()
+
+
 class SubMergeStates(StatesGroup):
     waiting_base_url = State()
     waiting_username = State()

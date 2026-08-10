@@ -128,5 +128,6 @@ def users_list_kb(users, offset, has_more):
         nav.append(InlineKeyboardButton(text="➡️ بعدی", callback_data=f"admin_users_{offset + 20}"))
     if nav:
         rows.append(nav)
+    rows.append([InlineKeyboardButton(text="🔍 جستجوی کاربر با آیدی عددی", callback_data="admin_users_search")])
     rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

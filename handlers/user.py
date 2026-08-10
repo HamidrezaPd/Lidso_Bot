@@ -61,15 +61,27 @@ async def register_user_if_needed(bot, user_id: int, username: str, full_name: s
                             description="پاداش دعوت دوستان",
                         ))
                     await session.commit()
-                    if reward_ready:
-                        try:
-                            await bot.send_message(
-                                inviter_id,
-                                f"🎉 تبریک! به خاطر دعوت {cfg.REFERRAL_NEEDED_COUNT} نفر، "
-                                f"{cfg.REFERRAL_BONUS_AMOUNT:,} تومان به کیف پول شما اضافه شد."
-                            )
-                        except Exception:
-                            pass
+
+                    try:
+                        invited_name = f"@{username}" if username else (full_name or "کاربر جدید")
+                        needed = max(int(cfg.REFERRAL_NEEDED_COUNT), 1)
+                        remaining = needed - (inviter.referral_count % needed)
+                        bonus_line = (
+                            f"💰 پاداش {cfg.REFERRAL_BONUS_AMOUNT:,} تومان به کیف پول شما اضافه شد.\n"
+                            if reward_ready else ""
+                        )
+                        await bot.send_message(
+                            inviter_id,
+                            f"🎉 کاربر جدید با لینک دعوت شما وارد ربات شد!\n\n"
+                            f"👤 کاربر: {invited_name}\n"
+                            f"🆔 آیدی عددی: {user_id}\n\n"
+                            f"👥 تعداد دعوت‌های شما: {inviter.referral_count} نفر\n"
+                            f"{bonus_line}"
+                            f"🎯 تا شارژ بعدی: {remaining} نفر"
+                        )
+                    except Exception:
+                        pass
+
 
         if is_new_user:
             uname = f"@{username}" if username else "بدون یوزرنیم"
@@ -170,10 +182,21 @@ async def tariffs_handler(message: Message):
 async def referral_handler(message: Message):
     bot_info = await message.bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref_{message.from_user.id}"
+
+    async with async_session() as session:
+        user = await session.scalar(select(User).where(User.user_id == message.from_user.id))
+        referral_count = user.referral_count if user else 0
+
+    needed = max(int(cfg.REFERRAL_NEEDED_COUNT), 1)
+    remaining = needed - (referral_count % needed)
+
     text = (
         f"👥 برنامه دعوت از دوستان\n\n"
-        f"با اشتراک‌گذاری لینک زیر، وقتی هر {cfg.REFERRAL_NEEDED_COUNT} نفر با لینک شما وارد ربات بشن، "
-        f"{cfg.REFERRAL_BONUS_AMOUNT:,} تومان به کیف پول شما اضافه می‌شود.\n\n"
+        f"👤 تعداد دعوت‌شده‌ها: {referral_count} نفر\n"
+        f"🎯 تعداد باقی‌مانده تا شارژ بعدی: {remaining} نفر\n"
+        f"💰 پاداش هر {needed} دعوت: {cfg.REFERRAL_BONUS_AMOUNT:,} تومان\n\n"
+        f"با اشتراک‌گذاری لینک زیر، دوستانت رو دعوت کن و با رسیدن به {needed} دعوت، "
+        f"کیف پولت {cfg.REFERRAL_BONUS_AMOUNT:,} تومان شارژ میشه.\n\n"
         f"🔗 لینک اختصاصی شما:\n`{ref_link}`"
     )
     await message.answer(text, parse_mode="Markdown", reply_markup=await main_keyboard())
