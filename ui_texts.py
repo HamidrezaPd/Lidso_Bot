@@ -39,19 +39,104 @@ DEFAULT_TEXTS = {
     "btn_wallet_discount": "🎁 کد تخفیف",
 }
 
+
+# ==================== متن‌های محتوایی پیش‌فرض ====================
+# این‌ها عمداً جدا از متن سفارشی نگه داشته می‌شوند تا ادمین همیشه نسخه‌ی اصلی را ببیند.
+DEFAULT_CONTENT_TEXTS = {
+    "tariffs": "💰 تعرفه‌های Lidso\n\nبرای مشاهده و خرید از دکمه «خرید سرویس» استفاده کنید.\n(این متن از بات ادمین قابل ویرایشه)",
+    "guide": "📚 آموزش اتصال\n\nبه زودی آموزش کامل قرار می‌گیرد.\n(این متن از بات ادمین قابل ویرایشه)",
+    "support_id": "@your_support_username",
+    "card_number": "6037-XXXX-XXXX-XXXX",
+    "card_holder": "نام صاحب حساب",
+    "crypto_address": "TXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (TRC20)",
+    "welcome": "👋 به ربات فروش Lidso خوش اومدی!\nاز منوی پایین یکی از گزینه‌ها رو انتخاب کن.\n\nسلام {name} عزیز 👋",
+    "order_processing_text": "⏳ سفارش شما در حال آماده‌سازیه، چند لحظه صبر کنید...",
+    "trial_processing_text": "⏳ در حال ساخت سرویس تست رایگان شما، چند لحظه صبر کنید...",
+}
+
+LEGACY_DEFAULTS = {
+    "tariffs": "💰 تعرفه‌های Lidso\n\nبرای مشاهده و خرید از دکمه «خرید سرویس» استفاده کنید.\n(این متن از بات ادمین قابل ویرایشه)",
+    "guide": "📚 آموزش اتصال\n\nبه زودی آموزش کامل قرار می‌گیرد.\n(این متن از بات ادمین قابل ویرایشه)",
+    "welcome": "👋 به ربات فروش Lidso خوش اومدی!\nاز منوی پایین یکی از گزینه‌ها رو انتخاب کن.",
+    "order_processing_text": "⏳ سفارش شما در حال آماده‌سازیه، چند لحظه صبر کنید...",
+}
+
 # ==================== کش داخل حافظه (برای جلوگیری از کوئری زیاد) ====================
 
 _cache: dict[str, str] = {}
 
 
 async def get_text(key: str) -> str:
+    """متن دکمه/کلید کوتاه؛ برای دکمه‌ها فقط سفارشی یا پیش‌فرض نمایش داده می‌شود."""
     if key in _cache:
         return _cache[key]
     async with async_session() as session:
-        val = await session.scalar(select(BotContent.value).where(BotContent.key == key))
-    text = val or DEFAULT_TEXTS.get(key, key)
+        row = await session.scalar(select(BotContent).where(BotContent.key == key))
+    text = (row.value if row and row.value else None) or (row.default_value if row and row.default_value else None) or DEFAULT_TEXTS.get(key, key)
     _cache[key] = text
     return text
+
+
+def _format_text(text: str, variables: dict) -> str:
+    if not text:
+        return text
+    try:
+        return text.format(**variables)
+    except (KeyError, IndexError, ValueError):
+        return text
+
+
+async def get_managed_text(key: str, fallback: str = "", **variables) -> str:
+    """متن قابل مدیریت از پنل ادمین.
+
+    اگر متن سفارشی وجود داشته باشد، ادمین می‌تواند پیش‌فرض را روشن/خاموش و قبل/بعد انتخاب کند.
+    این تابع برای متن‌های پیام است، نه متن دکمه‌ها.
+    """
+    async with async_session() as session:
+        row = await session.scalar(select(BotContent).where(BotContent.key == key))
+    default = (row.default_value if row and row.default_value else None) or DEFAULT_CONTENT_TEXTS.get(key) or fallback
+    custom = row.value if row and row.value else ""
+    use_default = bool(row.use_default) if row and row.use_default is not None else True
+    position = (row.default_position if row else "before") or "before"
+    if custom and use_default:
+        text = f"{default}\n\n{custom}" if position == "before" else f"{custom}\n\n{default}"
+    elif custom:
+        text = custom
+    else:
+        text = default if use_default else ""
+    return _format_text(text, variables)
+
+
+async def get_managed_text_and_entities(key: str, fallback: str = "", **variables):
+    """نسخه‌ی managed برای پیام‌هایی که entities تلگرام دارند."""
+    async with async_session() as session:
+        row = await session.scalar(select(BotContent).where(BotContent.key == key))
+    default = (row.default_value if row and row.default_value else None) or DEFAULT_CONTENT_TEXTS.get(key) or fallback
+    custom = row.value if row and row.value else ""
+    use_default = bool(row.use_default) if row and row.use_default is not None else True
+    position = (row.default_position if row else "before") or "before"
+    default = _format_text(default, variables)
+    custom = _format_text(custom, variables)
+    custom_entities = deserialize_entities(row.entities) if row else None
+    if custom and use_default:
+        if position == "before":
+            text = f"{default}\n\n{custom}"
+            shift = len(default) + 2
+        else:
+            text = f"{custom}\n\n{default}"
+            shift = 0
+        if custom_entities and shift:
+            shifted = []
+            for ent in custom_entities:
+                data = ent.model_dump()
+                if data.get("offset") is not None:
+                    data["offset"] = data["offset"] + shift
+                shifted.append(MessageEntity(**data))
+            custom_entities = shifted
+        return text, custom_entities
+    if custom:
+        return custom, custom_entities
+    return (default if use_default else ""), None
 
 
 async def get_texts(keys) -> dict:
@@ -97,25 +182,43 @@ async def styled_button_kwargs(key: str) -> dict:
 
 
 async def seed_ui_texts():
-    """موقع اجرای اول، اگه مقداری برای این کلیدها ثبت نشده بود، پیش‌فرض رو می‌سازه."""
+    """متن‌های دکمه و متن‌های محتوایی را idempotent seed و برای ویرایش مدیریت می‌کند."""
     async with async_session() as session:
         for k, v in DEFAULT_TEXTS.items():
             existing = await session.scalar(select(BotContent).where(BotContent.key == k))
             if not existing:
-                session.add(BotContent(key=k, value=v))
+                session.add(BotContent(key=k, value=None, default_value=v, use_default=True, default_position="before"))
+            else:
+                if not existing.default_value:
+                    existing.default_value = v
+                if existing.value == v or existing.value == LEGACY_DEFAULTS.get(k):
+                    existing.value = None
+        for k, v in DEFAULT_CONTENT_TEXTS.items():
+            existing = await session.scalar(select(BotContent).where(BotContent.key == k))
+            if not existing:
+                session.add(BotContent(key=k, value=None, default_value=v, use_default=True, default_position="before"))
+            else:
+                if not existing.default_value:
+                    existing.default_value = v
+                if existing.value == v or existing.value == LEGACY_DEFAULTS.get(k):
+                    existing.value = None
         await session.commit()
 
 
 async def reset_all_ui_texts():
-    """بازگردوندن همه‌ی دکمه‌ها به مقدار پیش‌فرض - برای وقتی یه چیزی اشتباهی خراب شده"""
+    """بازگرداندن همه‌ی متن‌ها به حالت پیش‌فرض، بدون حذف رکوردها."""
     async with async_session() as session:
-        for k, v in DEFAULT_TEXTS.items():
+        all_defaults = {**DEFAULT_TEXTS, **DEFAULT_CONTENT_TEXTS}
+        for k, v in all_defaults.items():
             row = await session.scalar(select(BotContent).where(BotContent.key == k))
             if row:
-                row.value = v
+                row.value = None
+                row.default_value = v
+                row.use_default = True
+                row.default_position = "before"
                 row.entities = None
             else:
-                session.add(BotContent(key=k, value=v))
+                session.add(BotContent(key=k, value=None, default_value=v, use_default=True, default_position="before"))
         await session.commit()
     invalidate_cache()
 

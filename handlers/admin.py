@@ -1593,7 +1593,7 @@ SETTINGS_CATEGORIES = {
         ("order_processing_text", "⏳ متن «سفارش در حال آماده‌سازیه»"),
         ("trial_processing_text", "⏳ متن «تست رایگان در حال ساخته‌شدنه»"),
         ("support_id", "🆔 آیدی پشتیبانی"), ("card_number", "💳 شماره کارت"),
-        ("card_holder", "👤 نام صاحب کارت"),
+        ("card_holder", "👤 نام صاحب کارت"), ("crypto_address", "🪙 آدرس ولت کریپتو"),
     ],
     "topup_limits": [
         ("min_topup_card", "💰 حداقل شارژ - کارت به کارت"),
@@ -1775,6 +1775,9 @@ async def cb_editcontent(callback: CallbackQuery, state: FSMContext):
     async with async_session() as session:
         row = await session.scalar(select(BotContent).where(BotContent.key == key))
         current = row.value if row else None
+        default_value = (row.default_value if row else None) or "(برای این مورد هنوز پیش‌فرض ثبت نشده)"
+        use_default = bool(row.use_default) if row and row.use_default is not None else True
+        default_position = (row.default_position if row else "before") or "before"
 
     if key in BUTTON_KEYS:
         icon_status = "دارد ✅" if (row and row.icon_custom_emoji_id) else "ندارد"
@@ -1796,16 +1799,31 @@ async def cb_editcontent(callback: CallbackQuery, state: FSMContext):
             ],
         ])
     else:
-        hint = ("\n\n✅ می‌تونید از فرمت‌بندی تلگرام (بولد/ایتالیک) و ایموجی پرمیوم هم استفاده کنید؛ "
-                "دقیقاً همون‌جوری که می‌فرستید ذخیره میشه.")
-        kb = None
+        hint = (
+            "\n\n🧩 پیش‌فرض فعلی:\n" + default_value +
+            f"\n\nوضعیت پیش‌فرض: {'فعال ✅' if use_default else 'خاموش ❌'}"
+            f"\nجایگاه پیش‌فرض: {'قبل از متن سفارشی ⬆️' if default_position == 'before' else 'بعد از متن سفارشی ⬇️'}"
+            "\n\nبعد از ذخیره، می‌توانید با دکمه‌های پایین تعیین کنید پیش‌فرض نمایش داده شود یا نه و قبل/بعد قرار بگیرد."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ ویرایش متن سفارشی", callback_data=f"editcustom_{key}")],
+            [
+                InlineKeyboardButton(text=("☑️ پیش‌فرض روشن" if use_default else "☐ پیش‌فرض خاموش"), callback_data=f"toggledefault_{key}"),
+                InlineKeyboardButton(text="⬆️ پیش‌فرض قبل", callback_data=f"defaultpos_{key}_before"),
+                InlineKeyboardButton(text="⬇️ پیش‌فرض بعد", callback_data=f"defaultpos_{key}_after"),
+            ],
+            [InlineKeyboardButton(text="🗑 حذف متن سفارشی", callback_data=f"clearcustom_{key}")],
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"settingscat_content")],
+        ])
 
     await callback.message.answer(
-        f"مقدار فعلی:\n\n{current or '(خالی - از پیش‌فرض استفاده میشه)'}\n\n"
-        f"متن جدید را ارسال کنید:{hint}",
+        f"مقدار سفارشی فعلی:\n\n{current or '(خالی)'}{hint}",
         reply_markup=kb,
     )
-    await state.set_state(SettingsEditStates.waiting_new_value)
+    if key in BUTTON_KEYS:
+        await state.set_state(SettingsEditStates.waiting_new_value)
+    else:
+        await state.clear()
     await callback.answer()
 
 
@@ -1942,6 +1960,61 @@ async def cb_btn_style(callback: CallbackQuery):
     await callback.answer("✅ رنگ ذخیره شد. برای دیدنش دوباره وارد منو شو.")
 
 
+@router.callback_query(F.data.startswith("editcustom_"))
+async def cb_editcustom(callback: CallbackQuery, state: FSMContext):
+    key = callback.data.split("_", 1)[1]
+    await state.update_data(content_key=key)
+    await callback.message.answer("✏️ متن سفارشی جدید را ارسال کنید. این متن جایگزین متن سفارشی قبلی می‌شود:")
+    await state.set_state(SettingsEditStates.waiting_new_value)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("toggledefault_"))
+async def cb_toggle_default(callback: CallbackQuery):
+    key = callback.data.split("_", 1)[1]
+    async with async_session() as session:
+        row = await session.scalar(select(BotContent).where(BotContent.key == key))
+        if not row:
+            await callback.answer("❌ این متن هنوز ثبت نشده.", show_alert=True)
+            return
+        row.use_default = not bool(row.use_default)
+        await session.commit()
+    from ui_texts import invalidate_cache
+    invalidate_cache(key)
+    await callback.answer("✅ وضعیت متن پیش‌فرض تغییر کرد.")
+    # صفحه ویرایش را دوباره باز کن
+    fake = callback
+    await cb_editcontent(fake, FSMContext) if False else None
+
+
+@router.callback_query(F.data.startswith("defaultpos_"))
+async def cb_default_position(callback: CallbackQuery):
+    rest = callback.data[len("defaultpos_"):]
+    key, position = rest.rsplit("_", 1)
+    async with async_session() as session:
+        row = await session.scalar(select(BotContent).where(BotContent.key == key))
+        if row:
+            row.default_position = position
+            await session.commit()
+    from ui_texts import invalidate_cache
+    invalidate_cache(key)
+    await callback.answer("✅ جایگاه متن پیش‌فرض ذخیره شد.")
+
+
+@router.callback_query(F.data.startswith("clearcustom_"))
+async def cb_clear_custom(callback: CallbackQuery):
+    key = callback.data.split("_", 1)[1]
+    async with async_session() as session:
+        row = await session.scalar(select(BotContent).where(BotContent.key == key))
+        if row:
+            row.value = None
+            row.entities = None
+            await session.commit()
+    from ui_texts import invalidate_cache
+    invalidate_cache(key)
+    await callback.answer("✅ متن سفارشی حذف شد؛ حالا فقط بر اساس تنظیم پیش‌فرض نمایش داده می‌شود.")
+
+
 @router.message(SettingsEditStates.waiting_new_value)
 async def process_new_content(message: Message, state: FSMContext):
     from ui_texts import invalidate_cache, serialize_entities
@@ -1970,8 +2043,21 @@ async def process_new_content(message: Message, state: FSMContext):
         if content:
             content.value = new_text
             content.entities = entities_json
+            if not content.default_value:
+                from ui_texts import DEFAULT_CONTENT_TEXTS, DEFAULT_TEXTS
+                content.default_value = DEFAULT_CONTENT_TEXTS.get(key) or DEFAULT_TEXTS.get(key) or new_text
+            # با ویرایش متن سفارشی، پیش‌فرض به‌صورت خودکار به متن اضافه نمی‌شود؛
+            # ادمین بعداً از پنل می‌تواند آن را دوباره روشن کند.
+            if key not in BUTTON_KEYS:
+                content.use_default = False
         else:
-            session.add(BotContent(key=key, value=new_text, entities=entities_json))
+            from ui_texts import DEFAULT_CONTENT_TEXTS, DEFAULT_TEXTS
+            session.add(BotContent(
+                key=key, value=new_text, entities=entities_json,
+                default_value=DEFAULT_CONTENT_TEXTS.get(key) or DEFAULT_TEXTS.get(key) or new_text,
+                use_default=False if key not in BUTTON_KEYS else True,
+                default_position="before",
+            ))
         await session.commit()
     invalidate_cache(key)  # تا همین لحظه اثرش بیفته، نیازی به ریستارت ربات نیست
 

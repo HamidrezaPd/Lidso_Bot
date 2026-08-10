@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-async def get_content(session, key, default=""):
-    val = await session.scalar(select(BotContent.value).where(BotContent.key == key))
-    return val or default
+async def get_content(session, key, default="", **variables):
+    from ui_texts import get_managed_text
+    return await get_managed_text(key, default, **variables)
 
 
 # ==================== ناوبری ====================

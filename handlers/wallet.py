@@ -108,9 +108,9 @@ async def validate_topup_amount(text: str, method: str):
     return amount, None
 
 
-async def get_content(session, key, default=""):
-    val = await session.scalar(select(BotContent.value).where(BotContent.key == key))
-    return val or default
+async def get_content(session, key, default="", **variables):
+    from ui_texts import get_managed_text
+    return await get_managed_text(key, default, **variables)
 
 
 def _not_expired(tx) -> bool:

@@ -221,6 +221,11 @@ class BotContent(Base):
     key = Column(String, unique=True, nullable=False)
     # tariffs, guide, support_id, card_number, card_holder, crypto_address, welcome, required_channel
     value = Column(String, nullable=False)
+    # متن سفارشی؛ default_value متن پیش‌فرضی است که ادمین همیشه می‌تواند ببیند.
+    default_value = Column(String, nullable=True)
+    use_default = Column(Boolean, default=True)
+    # before / after — جای متن پیش‌فرض نسبت به متن سفارشی
+    default_position = Column(String, default="before")
     entities = Column(String, nullable=True)
     # JSON سریالایز شده‌ی entities تلگرام (برای حفظ ایموجی پرمیوم/بولد/لینک و ...) - فقط برای متن پیام‌ها معنی داره، نه دکمه‌ها
     icon_custom_emoji_id = Column(String, nullable=True)
@@ -367,6 +372,9 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
         # ستون‌های جدیدی که به جدول‌های از قبل موجود اضافه شدن، اینجا با migration امن ست میشن
         await _add_column_if_missing(conn, "bot_contents", "entities", "TEXT")
+        await _add_column_if_missing(conn, "bot_contents", "default_value", "TEXT")
+        await _add_column_if_missing(conn, "bot_contents", "use_default", "BOOLEAN DEFAULT 1")
+        await _add_column_if_missing(conn, "bot_contents", "default_position", "TEXT DEFAULT 'before'")
         await _add_column_if_missing(conn, "service_plans", "hwid_limit", "INTEGER DEFAULT 0")
         await _add_column_if_missing(conn, "wallet_transactions", "expires_at", "TEXT")
         await _add_column_if_missing(conn, "menu_buttons", "icon_custom_emoji_id", "TEXT")

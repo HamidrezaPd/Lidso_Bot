@@ -19,9 +19,9 @@ import config as cfg
 router = Router()
 
 
-async def get_content(session, key, default=""):
-    val = await session.scalar(select(BotContent.value).where(BotContent.key == key))
-    return val or default
+async def get_content(session, key, default="", **variables):
+    from ui_texts import get_managed_text
+    return await get_managed_text(key, default, **variables)
 
 
 async def register_user_if_needed(bot, user_id: int, username: str, full_name: str, ref_payload: str = None):
@@ -120,11 +120,9 @@ async def start_handler(message: Message):
 
     await register_user_if_needed(message.bot, user_id, username, full_name, ref_payload)
 
-    from ui_texts import get_content_and_entities
-    welcome_text, welcome_entities = await get_content_and_entities("welcome", "👋 خوش آمدید!")
-
-    await message.answer(f"{welcome_text}\n\nسلام {full_name} عزیز 👋",
-                          entities=welcome_entities, reply_markup=await main_keyboard())
+    from ui_texts import get_managed_text_and_entities
+    welcome_text, welcome_entities = await get_managed_text_and_entities("welcome", "👋 خوش آمدید!", name=full_name)
+    await message.answer(welcome_text, entities=welcome_entities, reply_markup=await main_keyboard())
 
 
 # ==================== پروفایل من ====================
@@ -161,8 +159,8 @@ async def profile_handler(message: Message):
 
 @router.message(ButtonText("btn_tariffs"))
 async def tariffs_handler(message: Message):
-    from ui_texts import get_content_and_entities
-    text, entities = await get_content_and_entities("tariffs", "تعرفه‌ای ثبت نشده.")
+    from ui_texts import get_managed_text_and_entities
+    text, entities = await get_managed_text_and_entities("tariffs", "تعرفه‌ای ثبت نشده.")
     await message.answer(text, entities=entities, reply_markup=await main_keyboard())
 
 
@@ -185,8 +183,8 @@ async def referral_handler(message: Message):
 
 @router.message(ButtonText("btn_guide"))
 async def guide_handler(message: Message):
-    from ui_texts import get_content_and_entities
-    text, entities = await get_content_and_entities("guide", "آموزشی ثبت نشده.")
+    from ui_texts import get_managed_text_and_entities
+    text, entities = await get_managed_text_and_entities("guide", "آموزشی ثبت نشده.")
     await message.answer(text, entities=entities, reply_markup=await main_keyboard())
 
 
