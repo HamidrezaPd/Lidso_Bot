@@ -51,6 +51,7 @@ class CategoryEditStates(StatesGroup):
 
 class SettingsEditStates(StatesGroup):
     waiting_new_value = State()
+    waiting_default_value = State()
 
 
 class BroadcastStates(StatesGroup):

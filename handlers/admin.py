@@ -1637,6 +1637,7 @@ SETTINGS_CATEGORIES = {
         ("welcome", "👋 متن خوش‌آمدگویی (ایموجی پرمیوم/فرمت پشتیبانی میشه)"),
         ("order_processing_text", "⏳ متن «سفارش در حال آماده‌سازیه»"),
         ("trial_processing_text", "⏳ متن «تست رایگان در حال ساخته‌شدنه»"),
+        ("support", "📞 متن کامل پشتیبانی (فرمت/ایموجی پرمیوم)"),
         ("support_id", "🆔 آیدی پشتیبانی"), ("card_number", "💳 شماره کارت"),
         ("card_holder", "👤 نام صاحب کارت"),
     ],
@@ -1820,6 +1821,9 @@ async def cb_editcontent(callback: CallbackQuery, state: FSMContext):
     async with async_session() as session:
         row = await session.scalar(select(BotContent).where(BotContent.key == key))
         current = row.value if row else None
+        default_value = (row.default_value if row and row.default_value else None)
+        use_default = bool(row.use_default) if row and row.use_default is not None else True
+        default_position = (row.default_position if row else "before") or "before"
 
     if key in BUTTON_KEYS:
         icon_status = "دارد ✅" if (row and row.icon_custom_emoji_id) else "ندارد"
@@ -1841,13 +1845,22 @@ async def cb_editcontent(callback: CallbackQuery, state: FSMContext):
             ],
         ])
     else:
-        hint = ("\n\n✅ می‌تونید از فرمت‌بندی تلگرام (بولد/ایتالیک) و ایموجی پرمیوم هم استفاده کنید؛ "
-                "دقیقاً همون‌جوری که می‌فرستید ذخیره میشه.")
-        kb = None
+        hint = ("\n\n✅ فرمت‌بندی تلگرام (بولد/ایتالیک/لینک/ایموجی پرمیوم) ذخیره می‌شود.\n"
+                "🔧 از دکمه‌های زیر می‌توانید استفاده از پیش‌فرض و جای آن را کنترل کنید.")
+        rows = [
+            [InlineKeyboardButton(text=f"📌 متن پیش‌فرض: {'فعال ✅' if use_default else 'غیرفعال ❌'}", callback_data=f"toggle_default_{key}")],
+            [
+                InlineKeyboardButton(text=f"⬆️ پیش‌فرض قبل {'✅' if default_position == 'before' else ''}", callback_data=f"defaultpos_{key}_before"),
+                InlineKeyboardButton(text=f"⬇️ پیش‌فرض بعد {'✅' if default_position == 'after' else ''}", callback_data=f"defaultpos_{key}_after"),
+            ],
+            [InlineKeyboardButton(text="📝 ویرایش متن پیش‌فرض", callback_data=f"editdefault_{key}")],
+            [InlineKeyboardButton(text="♻️ حذف متن سفارشی / برگشت به پیش‌فرض", callback_data=f"clearcustom_{key}")],
+        ]
+        kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     await callback.message.answer(
-        f"مقدار فعلی:\n\n{current or '(خالی - از پیش‌فرض استفاده میشه)'}\n\n"
-        f"متن جدید را ارسال کنید:{hint}",
+        f"مقدار فعلی سفارشی:\n\n{current or '(ندارد)'}\n\n"
+        f"متن پیش‌فرض فعلی:\n\n{default_value or '(ندارد)'}{hint}",
         reply_markup=kb,
     )
     await state.set_state(SettingsEditStates.waiting_new_value)
@@ -1985,6 +1998,81 @@ async def cb_btn_style(callback: CallbackQuery):
     from ui_texts import invalidate_cache
     invalidate_cache(key)
     await callback.answer("✅ رنگ ذخیره شد. برای دیدنش دوباره وارد منو شو.")
+
+
+@router.callback_query(F.data.startswith("toggle_default_"))
+async def cb_toggle_default(callback: CallbackQuery):
+    key = callback.data[len("toggle_default_"):]
+    async with async_session() as session:
+        row = await session.scalar(select(BotContent).where(BotContent.key == key))
+        if not row:
+            await callback.answer("❌ این متن هنوز ذخیره نشده.", show_alert=True)
+            return
+        row.use_default = not bool(row.use_default)
+        await session.commit()
+    await callback.answer("✅ وضعیت متن پیش‌فرض تغییر کرد.")
+
+
+@router.callback_query(F.data.startswith("defaultpos_"))
+async def cb_default_position(callback: CallbackQuery):
+    rest = callback.data[len("defaultpos_"):]
+    key, position = rest.rsplit("_", 1)
+    async with async_session() as session:
+        row = await session.scalar(select(BotContent).where(BotContent.key == key))
+        if not row:
+            await callback.answer("❌ این متن هنوز ذخیره نشده.", show_alert=True)
+            return
+        row.default_position = position
+        await session.commit()
+    await callback.answer("✅ جای متن پیش‌فرض ذخیره شد.")
+
+
+@router.callback_query(F.data.startswith("clearcustom_"))
+async def cb_clear_custom(callback: CallbackQuery):
+    key = callback.data[len("clearcustom_"):]
+    async with async_session() as session:
+        row = await session.scalar(select(BotContent).where(BotContent.key == key))
+        if row:
+            row.value = None
+            row.entities = None
+            row.use_default = True
+            await session.commit()
+    from ui_texts import invalidate_cache
+    invalidate_cache(key)
+    await callback.answer("✅ متن سفارشی حذف شد و پیش‌فرض فعال شد.")
+
+
+@router.callback_query(F.data.startswith("editdefault_"))
+async def cb_edit_default(callback: CallbackQuery, state: FSMContext):
+    key = callback.data[len("editdefault_"):]
+    await state.update_data(default_content_key=key)
+    await callback.message.answer(
+        "📝 متن پیش‌فرض جدید را ارسال کن.\n\n"
+        "فرمت‌بندی، بولد، لینک و ایموجی پرمیوم دقیقاً از همین پیام ذخیره می‌شود."
+    )
+    await state.set_state(SettingsEditStates.waiting_default_value)
+    await callback.answer()
+
+
+@router.message(SettingsEditStates.waiting_default_value)
+async def process_default_content(message: Message, state: FSMContext):
+    from ui_texts import invalidate_cache, serialize_entities
+    data = await state.get_data()
+    key = data["default_content_key"]
+    new_text = message.text or ""
+    async with async_session() as session:
+        row = await session.scalar(select(BotContent).where(BotContent.key == key))
+        if not row:
+            row = BotContent(key=key, value=None, default_value=new_text, use_default=True, default_position="before")
+            session.add(row)
+        else:
+            row.default_value = new_text
+            row.use_default = True
+        row.default_entities = serialize_entities(message.entities)
+        await session.commit()
+    invalidate_cache(key)
+    await message.answer("✅ متن پیش‌فرض با فرمت‌بندی و ایموجی‌هایش ذخیره شد.", reply_markup=admin_main_menu_kb())
+    await state.clear()
 
 
 @router.message(SettingsEditStates.waiting_new_value)

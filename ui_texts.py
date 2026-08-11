@@ -52,6 +52,7 @@ DEFAULT_CONTENT_TEXTS = {
     "welcome": "👋 به ربات فروش Lidso خوش اومدی!\nاز منوی پایین یکی از گزینه‌ها رو انتخاب کن.\n\nسلام {name} عزیز 👋",
     "order_processing_text": "⏳ سفارش شما در حال آماده‌سازیه، چند لحظه صبر کنید...",
     "trial_processing_text": "⏳ در حال ساخت سرویس تست رایگان شما، چند لحظه صبر کنید...",
+    "support": "📞 پشتیبانی Lidso\n\nجهت ارتباط با اپراتور به آیدی زیر پیام دهید:\n🆔 {support_id}\n\n🔗 برای ارتباط با تیم پشتیبانی، به آیدی زیر پیام دهید:\n🆔 @LidsoNet_Support\n\n⚛️ برای اخبار و اطلاعات بیشتر، به کانال ما بپیوندید:\n📣 @LidsoNet",
 }
 
 LEGACY_DEFAULTS = {
@@ -108,35 +109,47 @@ async def get_managed_text(key: str, fallback: str = "", **variables) -> str:
 
 
 async def get_managed_text_and_entities(key: str, fallback: str = "", **variables):
-    """نسخه‌ی managed برای پیام‌هایی که entities تلگرام دارند."""
+    """متن managed همراه با entities متن پیش‌فرض و متن سفارشی.
+
+    use_default و default_position برای همه‌ی متن‌های محتوایی اعمال می‌شوند.
+    entities متن سفارشی و default_entities متن پیش‌فرض با جابه‌جایی offsetها ترکیب می‌شوند.
+    """
     async with async_session() as session:
         row = await session.scalar(select(BotContent).where(BotContent.key == key))
+
     default = (row.default_value if row and row.default_value else None) or DEFAULT_CONTENT_TEXTS.get(key) or fallback
     custom = row.value if row and row.value else ""
     use_default = bool(row.use_default) if row and row.use_default is not None else True
     position = (row.default_position if row else "before") or "before"
+
     default = _format_text(default, variables)
     custom = _format_text(custom, variables)
-    custom_entities = deserialize_entities(row.entities) if row else None
+    default_entities = deserialize_entities(row.default_entities) if row and row.default_entities else None
+    custom_entities = deserialize_entities(row.entities) if row and row.entities else None
+
+    def shift_entities(entities, shift):
+        if not entities:
+            return None
+        out = []
+        for ent in entities:
+            data = ent.model_dump()
+            data["offset"] = int(data.get("offset", 0)) + shift
+            out.append(MessageEntity(**data))
+        return out
+
     if custom and use_default:
         if position == "before":
             text = f"{default}\n\n{custom}"
-            shift = len(default) + 2
+            return text, (default_entities or []) + (shift_entities(custom_entities, len(default) + 2) or [])
         else:
             text = f"{custom}\n\n{default}"
-            shift = 0
-        if custom_entities and shift:
-            shifted = []
-            for ent in custom_entities:
-                data = ent.model_dump()
-                if data.get("offset") is not None:
-                    data["offset"] = data["offset"] + shift
-                shifted.append(MessageEntity(**data))
-            custom_entities = shifted
-        return text, custom_entities
+            return text, (custom_entities or []) + (shift_entities(default_entities, len(custom) + 2) or [])
+
     if custom:
         return custom, custom_entities
-    return (default if use_default else ""), None
+    if use_default:
+        return default, default_entities
+    return "", None
 
 
 async def get_texts(keys) -> dict:

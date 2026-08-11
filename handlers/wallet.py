@@ -308,6 +308,21 @@ async def card_pay_start(message: Message, state: FSMContext):
             )
             return
 
+    # اطلاع فوری به ادمین: کاربر همین الان روش «کارت به کارت» را انتخاب کرده.
+    for admin_id in cfg.ADMIN_IDS:
+        try:
+            uname = f"@{message.from_user.username}" if message.from_user.username else "بدون یوزرنیم"
+            await message.bot.send_message(
+                admin_id,
+                f"💳 انتخاب روش پرداخت: کارت به کارت\n\n"
+                f"🆔 آیدی عددی: {message.from_user.id}\n"
+                f"👤 نام: {message.from_user.full_name}\n"
+                f"✏️ یوزرنیم: {uname}\n\n"
+                f"⏳ کاربر در حال وارد کردن مبلغ و سپس ارسال رسید است.",
+            )
+        except Exception:
+            pass
+
     min_topup = await get_min_topup("CARD")
     max_topup = await get_max_topup("CARD")
     max_line = f"\n(حداکثر مبلغ: {max_topup:,} تومان)" if max_topup else ""

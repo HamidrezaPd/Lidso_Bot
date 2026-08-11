@@ -223,10 +223,15 @@ async def guide_handler(message: Message):
 
 @router.message(ButtonText("btn_support"))
 async def support_handler(message: Message):
+    from ui_texts import get_managed_text_and_entities
     async with async_session() as session:
         sup_id = await get_content(session, "support_id", "@your_support_username")
-    await message.answer(f"📞 پشتیبانی Lidso\n\nجهت ارتباط با اپراتور به آیدی زیر پیام دهید:\n🆔 {sup_id}",
-                          reply_markup=await main_keyboard())
+    text, entities = await get_managed_text_and_entities(
+        "support",
+        "📞 پشتیبانی Lidso\n\nجهت ارتباط با اپراتور به آیدی زیر پیام دهید:\n🆔 {support_id}\n\n🔗 برای ارتباط با تیم پشتیبانی، به آیدی زیر پیام دهید:\n🆔 @LidsoNet_Support\n\n⚛️ برای اخبار و اطلاعات بیشتر، به کانال ما بپیوندید:\n📣 @LidsoNet",
+        support_id=sup_id,
+    )
+    await message.answer(text, entities=entities, reply_markup=await main_keyboard())
 
 
 # ==================== سرویس‌های من (inline) ====================
