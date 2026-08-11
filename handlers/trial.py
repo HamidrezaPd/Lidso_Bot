@@ -106,7 +106,7 @@ async def _deliver_trial(message: Message, trial: TrialPlan, user_id_override: i
     # جلوگیری از race condition:
     # اگر کاربر هم‌زمان چند بار روی تست رایگان کلیک کند،
     # فقط یکی از درخواست‌ها اجازه‌ی عبور از چک used_free_trial و ساخت سرویس را دارد.
-    async with user_operation_lock(user_id, "free_trial"):
+    async with user_operation_lock(user_id):
         async with async_session() as session:
             # چک نهایی دوباره (جلوگیری از race condition اگه کاربر دوبار سریع کلیک کنه)
             user = await session.scalar(select(User).where(User.user_id == user_id))
