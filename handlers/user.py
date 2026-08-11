@@ -14,6 +14,7 @@ from keyboards.user_kb import main_keyboard, wallet_menu_keyboard
 from ui_texts import ButtonText
 from panels import renew_panel_account
 from middleware import get_required_channel, is_member
+from operation_locks import user_operation_lock
 import config as cfg
 
 router = Router()
@@ -326,82 +327,84 @@ async def do_renew(callback: CallbackQuery):
     order_id = int(callback.data.split("_")[1])
     user_id = callback.from_user.id
 
-    async with async_session() as session:
-        order = await session.get(ServiceOrder, order_id)
-        if not order or order.user_id != user_id:
-            await callback.answer("سرویس پیدا نشد.", show_alert=True)
-            return
-        if order.is_trial:
-            await callback.answer("❌ سرویس‌های تست رایگان قابل تمدید نیستن.", show_alert=True)
-            return
-
-        plan = await session.get(ServicePlan, order.plan_id) if order.plan_id else None
-        price = plan.price if plan else order.price
-        days = plan.duration_days if plan else 30
-
-        user = await session.scalar(select(User).where(User.user_id == user_id))
-        if user.balance < price:
-            await callback.message.answer(
-                f"❌ موجودی کیف پول کافی نیست.\n💰 موجودی: {user.balance:,} تومان\n"
-                f"💵 مبلغ مورد نیاز: {price:,} تومان",
-                reply_markup=await wallet_menu_keyboard(),
-            )
-            await callback.answer()
-            return
-
-        user.balance -= price
-        session.add(WalletTransaction(
-            user_id=user_id, amount=price, transaction_type="RENEWAL",
-            method="WALLET", status="SUCCESS", description=f"تمدید {order.config_name}",
-        ))
-
-        panel_note = ""
-        if order.panel_id and plan:
-            panel = await session.get(Panel, order.panel_id)
-            if panel:
-                try:
-                    await renew_panel_account(panel, order.config_name, plan)
-                except Exception as e:
-                    panel_note = "\n⚠️ تمدید در پنل با خطا مواجه شد، پشتیبانی مطلع شد."
-                    for admin_id in cfg.ADMIN_IDS:
-                        try:
-                            await callback.bot.send_message(
-                                admin_id,
-                                f"🔴 خطا در تمدید خودکار\n\nپنل: {panel.name}\n"
-                                f"کانفیگ: {order.config_name}\nکاربر: {user_id}\nخطا: {e}"
-                            )
-                        except Exception:
-                            pass
-
-        order.expire_at = None if days == 0 else datetime.now(timezone.utc) + timedelta(days=days)
-        order.renew_notified = False
-        order.status = "ACTIVE"
-        await session.commit()
-
-    await callback.message.answer(
-        f"✅ سرویس «{order.config_name}» با موفقیت تمدید شد.{panel_note}",
-        reply_markup=await main_keyboard(),
-    )
-    await callback.answer()
-
-
-# ==================== دکمه‌های سفارشی منوی اصلی (اضافه‌شده از /admin) ====================
-
-class CustomMenuButtonText(BaseFilter):
-    async def __call__(self, message: Message):
-        if not message.text:
-            return False
+    # تمدید و خرید برای یک کاربر همزمان اجرا نمی‌شوند.
+    async with user_operation_lock(user_id):
         async with async_session() as session:
-            btn = await session.scalar(
-                select(MenuButton).where(
-                    MenuButton.is_custom == True,
-                    MenuButton.enabled == True,
-                    MenuButton.label == message.text,
+            order = await session.get(ServiceOrder, order_id)
+            if not order or order.user_id != user_id:
+                await callback.answer("سرویس پیدا نشد.", show_alert=True)
+                return
+            if order.is_trial:
+                await callback.answer("❌ سرویس‌های تست رایگان قابل تمدید نیستن.", show_alert=True)
+                return
+
+            plan = await session.get(ServicePlan, order.plan_id) if order.plan_id else None
+            price = plan.price if plan else order.price
+            days = plan.duration_days if plan else 30
+
+            user = await session.scalar(select(User).where(User.user_id == user_id))
+            if user.balance < price:
+                await callback.message.answer(
+                    f"❌ موجودی کیف پول کافی نیست.\n💰 موجودی: {user.balance:,} تومان\n"
+                    f"💵 مبلغ مورد نیاز: {price:,} تومان",
+                    reply_markup=await wallet_menu_keyboard(),
                 )
-            )
-        if btn:
-            return {"custom_button": btn}
-        return False
+                await callback.answer()
+                return
+
+            user.balance -= price
+            session.add(WalletTransaction(
+                user_id=user_id, amount=price, transaction_type="RENEWAL",
+                method="WALLET", status="SUCCESS", description=f"تمدید {order.config_name}",
+            ))
+
+            panel_note = ""
+            if order.panel_id and plan:
+                panel = await session.get(Panel, order.panel_id)
+                if panel:
+                    try:
+                        await renew_panel_account(panel, order.config_name, plan)
+                    except Exception as e:
+                        panel_note = "\n⚠️ تمدید در پنل با خطا مواجه شد، پشتیبانی مطلع شد."
+                        for admin_id in cfg.ADMIN_IDS:
+                            try:
+                                await callback.bot.send_message(
+                                    admin_id,
+                                    f"🔴 خطا در تمدید خودکار\n\nپنل: {panel.name}\n"
+                                    f"کانفیگ: {order.config_name}\nکاربر: {user_id}\nخطا: {e}"
+                                )
+                            except Exception:
+                                pass
+
+            order.expire_at = None if days == 0 else datetime.now(timezone.utc) + timedelta(days=days)
+            order.renew_notified = False
+            order.status = "ACTIVE"
+            await session.commit()
+
+        await callback.message.answer(
+            f"✅ سرویس «{order.config_name}» با موفقیت تمدید شد.{panel_note}",
+            reply_markup=await main_keyboard(),
+        )
+        await callback.answer()
+
+
+    # ==================== دکمه‌های سفارشی منوی اصلی (اضافه‌شده از /admin) ====================
+
+    class CustomMenuButtonText(BaseFilter):
+        async def __call__(self, message: Message):
+            if not message.text:
+                return False
+            async with async_session() as session:
+                btn = await session.scalar(
+                    select(MenuButton).where(
+                        MenuButton.is_custom == True,
+                        MenuButton.enabled == True,
+                        MenuButton.label == message.text,
+                    )
+                )
+            if btn:
+                return {"custom_button": btn}
+            return False
 
 
 @router.message(CustomMenuButtonText())

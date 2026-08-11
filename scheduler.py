@@ -10,7 +10,9 @@ from datetime import datetime, timedelta, timezone
 from aiogram import Bot
 from sqlalchemy import select
 
-from database import async_session, ServiceOrder, Panel
+from database import async_session
+from operation_locks import user_operation_lock
+from database import ServiceOrder, Panel
 from panels import delete_panel_account, is_panel_account_exhausted
 import config as cfg
 
@@ -226,14 +228,15 @@ async def check_gateway_payments(bot: Bot):
         if error or not paid:
             continue
 
-        async with async_session() as session:
-            fresh_tx = await session.get(WalletTransaction, tx.id)
-            if not fresh_tx or fresh_tx.status != "AWAITING_GATEWAY":
-                continue  # یکی دیگه (مثلاً چک دستی کاربر) قبلاً پردازشش کرده
-            user = await session.scalar(select(User).where(User.user_id == fresh_tx.user_id))
-            user.balance += fresh_tx.amount
-            fresh_tx.status = "SUCCESS"
-            await session.commit()
+        async with user_operation_lock(tx.user_id):
+            async with async_session() as session:
+                fresh_tx = await session.get(WalletTransaction, tx.id)
+                if not fresh_tx or fresh_tx.status != "AWAITING_GATEWAY":
+                    continue  # یکی دیگه (مثلاً چک دستی کاربر) قبلاً پردازشش کرده
+                user = await session.scalar(select(User).where(User.user_id == fresh_tx.user_id))
+                user.balance += fresh_tx.amount
+                fresh_tx.status = "SUCCESS"
+                await session.commit()
 
         try:
             await bot.send_message(
@@ -284,14 +287,15 @@ async def check_crypto_payments(bot: Bot):
         if not paid:
             continue
 
-        async with async_session() as session:
-            fresh_tx = await session.get(WalletTransaction, tx.id)
-            if not fresh_tx or fresh_tx.status != "AWAITING_CRYPTO":
-                continue
-            user = await session.scalar(select(User).where(User.user_id == fresh_tx.user_id))
-            user.balance += fresh_tx.amount
-            fresh_tx.status = "SUCCESS"
-            await session.commit()
+        async with user_operation_lock(tx.user_id):
+            async with async_session() as session:
+                fresh_tx = await session.get(WalletTransaction, tx.id)
+                if not fresh_tx or fresh_tx.status != "AWAITING_CRYPTO":
+                    continue
+                user = await session.scalar(select(User).where(User.user_id == fresh_tx.user_id))
+                user.balance += fresh_tx.amount
+                fresh_tx.status = "SUCCESS"
+                await session.commit()
 
         try:
             await bot.send_message(

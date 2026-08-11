@@ -106,4 +106,4 @@ async def verify_invoice(uid: str):
 
 
 def make_order_id(user_id: int) -> str:
-    return f"lidso_{user_id}_{int(time.time())}"
+    return f"lidso_{user_id}_{time.time_ns()}"

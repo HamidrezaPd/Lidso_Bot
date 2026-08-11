@@ -15,6 +15,7 @@ from keyboards.user_kb import (
     back_to_wallet_keyboard,
 )
 import config as cfg
+from operation_locks import user_operation_lock
 
 router = Router()
 
@@ -369,29 +370,31 @@ async def card_pay_amount(message: Message, state: FSMContext):
         await message.answer(err)
         return
 
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=CARD_PAYMENT_MINUTES)
+    user_id = message.from_user.id
+    async with user_operation_lock(user_id):
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=CARD_PAYMENT_MINUTES)
 
-    async with async_session() as session:
-        tx = WalletTransaction(
-            user_id=message.from_user.id, amount=amount, transaction_type="DEPOSIT",
-            method="CARD", status="AWAITING_RECEIPT", expires_at=expires_at,
-            description="در انتظار ارسال رسید کارت به کارت",
+        async with async_session() as session:
+            tx = WalletTransaction(
+                user_id=message.from_user.id, amount=amount, transaction_type="DEPOSIT",
+                method="CARD", status="AWAITING_RECEIPT", expires_at=expires_at,
+                description="در انتظار ارسال رسید کارت به کارت",
+            )
+            session.add(tx)
+            await session.commit()
+            await session.refresh(tx)
+            card_number = await get_content(session, "card_number", "شماره کارت تنظیم نشده")
+            card_holder = await get_content(session, "card_holder", "-")
+
+        await state.update_data(tx_id=tx.id, amount=amount)
+        await message.answer(
+            f"💳 شماره کارت جهت واریز:\n\n`{card_number}`\nبه نام: {card_holder}\n\n"
+            f"مبلغ {amount:,} تومان را واریز کرده و سپس عکس رسید را همینجا ارسال کنید 📸\n\n"
+            f"⏳ مهلت شما برای ارسال رسید: {CARD_PAYMENT_MINUTES} دقیقه",
+            parse_mode="Markdown",
+            reply_markup=await back_to_wallet_keyboard(),
         )
-        session.add(tx)
-        await session.commit()
-        await session.refresh(tx)
-        card_number = await get_content(session, "card_number", "شماره کارت تنظیم نشده")
-        card_holder = await get_content(session, "card_holder", "-")
-
-    await state.update_data(tx_id=tx.id, amount=amount)
-    await message.answer(
-        f"💳 شماره کارت جهت واریز:\n\n`{card_number}`\nبه نام: {card_holder}\n\n"
-        f"مبلغ {amount:,} تومان را واریز کرده و سپس عکس رسید را همینجا ارسال کنید 📸\n\n"
-        f"⏳ مهلت شما برای ارسال رسید: {CARD_PAYMENT_MINUTES} دقیقه",
-        parse_mode="Markdown",
-        reply_markup=await back_to_wallet_keyboard(),
-    )
-    await state.set_state(WalletStates.waiting_card_receipt)
+        await state.set_state(WalletStates.waiting_card_receipt)
 
 
 @router.message(WalletStates.waiting_card_receipt, F.photo)
@@ -491,135 +494,139 @@ async def crypto_pay_amount(message: Message, state: FSMContext):
         await message.answer(err)
         return
 
-    data = await state.get_data()
-    method = data.get("crypto_method", "TON")
+    user_id = message.from_user.id
+    async with user_operation_lock(user_id):
+        data = await state.get_data()
+        method = data.get("crypto_method", "TON")
 
-    from crypto import (
-        get_gram_toman_rate, get_usdc_toman_rate, get_crypto_config, generate_comment,
-    )
-
-    rate = await get_gram_toman_rate() if method == "TON" else await get_usdc_toman_rate()
-    if not rate:
-        await message.answer(
-            "⚠️ در حال حاضر نرخ لحظه‌ای در دسترس نیست. لطفاً چند لحظه دیگه دوباره امتحان کنید "
-            "یا از «پشتیبانی» کمک بگیرید.",
-            reply_markup=await wallet_menu_keyboard(),
+        from crypto import (
+            get_gram_toman_rate, get_usdc_toman_rate, get_crypto_config, generate_comment,
         )
+
+        rate = await get_gram_toman_rate() if method == "TON" else await get_usdc_toman_rate()
+        if not rate:
+            await message.answer(
+                "⚠️ در حال حاضر نرخ لحظه‌ای در دسترس نیست. لطفاً چند لحظه دیگه دوباره امتحان کنید "
+                "یا از «پشتیبانی» کمک بگیرید.",
+                reply_markup=await wallet_menu_keyboard(),
+            )
+            await state.clear()
+            return
+
+        crypto_cfg = await get_crypto_config()
+        address = crypto_cfg.ton_address if method == "TON" else crypto_cfg.bsc_address
+        if not address:
+            await message.answer(
+                "⚠️ آدرس ولت برای این روش هنوز تنظیم نشده. لطفاً از روش دیگه‌ای استفاده کنید یا با پشتیبانی تماس بگیرید.",
+                reply_markup=await wallet_menu_keyboard(),
+            )
+            await state.clear()
+            return
+
+        crypto_amount = round(amount / rate, 4)
+        comment = None
+        if method == "TON" and crypto_cfg.comment_enabled:
+            comment = generate_comment()
+
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=CRYPTO_PAYMENT_MINUTES)
+
+        async with async_session() as session:
+            tx = WalletTransaction(
+                user_id=message.from_user.id, amount=amount, transaction_type="DEPOSIT",
+                method=method, status="AWAITING_CRYPTO", expires_at=expires_at,
+                crypto_amount=crypto_amount, crypto_comment=comment,
+                description=f"در انتظار واریز {crypto_amount} {'TON' if method == 'TON' else 'USDC'}",
+            )
+            session.add(tx)
+            await session.commit()
+            await session.refresh(tx)
+
+        unit = "TON" if method == "TON" else "USDC"
+        text_lines = [
+            f"🪙 نرخ لحظه‌ای: هر ۱ {unit} ≈ {rate:,.0f} تومان\n",
+            f"با واریز <b>{crypto_amount} {unit}</b>، کیف پول شما <b>{amount:,} تومان</b> شارژ می‌شود.\n",
+            f"⏳ مهلت شما: {CRYPTO_PAYMENT_MINUTES} دقیقه\n",
+            f"آدرس مقصد (روی متن بزنید تا کپی بشه):\n<code>{address}</code>",
+        ]
+        if comment:
+            text_lines.append(
+                f"\n{crypto_cfg.comment_prompt or 'کامنت تراکنش'} (حتماً دقیقاً همینو بذارید):\n<code>{comment}</code>"
+            )
+        text_lines.append(f"\nمقدار دقیق واریزی:\n<code>{crypto_amount}</code>")
+
+        await message.answer("\n".join(text_lines), parse_mode="HTML", reply_markup=await back_to_wallet_keyboard())
+
+        copy_rows = [
+            [InlineKeyboardButton(text="📋 کپی آدرس مقصد", copy_text=CopyTextButton(text=address))],
+            [InlineKeyboardButton(text="📋 کپی مقدار واریزی", copy_text=CopyTextButton(text=str(crypto_amount)))],
+        ]
+        if comment:
+            copy_rows.append([InlineKeyboardButton(text="📋 کپی کامنت", copy_text=CopyTextButton(text=comment))])
+        copy_rows.append([InlineKeyboardButton(text="🔄 بررسی پرداخت", callback_data=f"cryptocheck_{tx.id}")])
+        await message.answer("👆 برای کپی سریع از دکمه‌های زیر استفاده کن:",
+                              reply_markup=InlineKeyboardMarkup(inline_keyboard=copy_rows))
+
         await state.clear()
-        return
 
-    crypto_cfg = await get_crypto_config()
-    address = crypto_cfg.ton_address if method == "TON" else crypto_cfg.bsc_address
-    if not address:
-        await message.answer(
-            "⚠️ آدرس ولت برای این روش هنوز تنظیم نشده. لطفاً از روش دیگه‌ای استفاده کنید یا با پشتیبانی تماس بگیرید.",
-            reply_markup=await wallet_menu_keyboard(),
+        await _notify_admins(
+            message.bot,
+            f"🪙 شروع پرداخت ارزی جدید\n\n"
+            f"🆔 آیدی عددی: {message.from_user.id}\n✏️ یوزرنیم: @{message.from_user.username if message.from_user.username else 'بدون یوزرنیم'}\n👤 نام: {message.from_user.full_name}\nروش: {unit}\nمبلغ: {amount:,} تومان "
+            f"({crypto_amount} {unit})\nشماره تراکنش: #{tx.id}\nوضعیت: در انتظار واریز کاربر",
         )
-        await state.clear()
-        return
-
-    crypto_amount = round(amount / rate, 4)
-    comment = None
-    if method == "TON" and crypto_cfg.comment_enabled:
-        comment = generate_comment()
-
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=CRYPTO_PAYMENT_MINUTES)
-
-    async with async_session() as session:
-        tx = WalletTransaction(
-            user_id=message.from_user.id, amount=amount, transaction_type="DEPOSIT",
-            method=method, status="AWAITING_CRYPTO", expires_at=expires_at,
-            crypto_amount=crypto_amount, crypto_comment=comment,
-            description=f"در انتظار واریز {crypto_amount} {'TON' if method == 'TON' else 'USDC'}",
-        )
-        session.add(tx)
-        await session.commit()
-        await session.refresh(tx)
-
-    unit = "TON" if method == "TON" else "USDC"
-    text_lines = [
-        f"🪙 نرخ لحظه‌ای: هر ۱ {unit} ≈ {rate:,.0f} تومان\n",
-        f"با واریز <b>{crypto_amount} {unit}</b>، کیف پول شما <b>{amount:,} تومان</b> شارژ می‌شود.\n",
-        f"⏳ مهلت شما: {CRYPTO_PAYMENT_MINUTES} دقیقه\n",
-        f"آدرس مقصد (روی متن بزنید تا کپی بشه):\n<code>{address}</code>",
-    ]
-    if comment:
-        text_lines.append(
-            f"\n{crypto_cfg.comment_prompt or 'کامنت تراکنش'} (حتماً دقیقاً همینو بذارید):\n<code>{comment}</code>"
-        )
-    text_lines.append(f"\nمقدار دقیق واریزی:\n<code>{crypto_amount}</code>")
-
-    await message.answer("\n".join(text_lines), parse_mode="HTML", reply_markup=await back_to_wallet_keyboard())
-
-    copy_rows = [
-        [InlineKeyboardButton(text="📋 کپی آدرس مقصد", copy_text=CopyTextButton(text=address))],
-        [InlineKeyboardButton(text="📋 کپی مقدار واریزی", copy_text=CopyTextButton(text=str(crypto_amount)))],
-    ]
-    if comment:
-        copy_rows.append([InlineKeyboardButton(text="📋 کپی کامنت", copy_text=CopyTextButton(text=comment))])
-    copy_rows.append([InlineKeyboardButton(text="🔄 بررسی پرداخت", callback_data=f"cryptocheck_{tx.id}")])
-    await message.answer("👆 برای کپی سریع از دکمه‌های زیر استفاده کن:",
-                          reply_markup=InlineKeyboardMarkup(inline_keyboard=copy_rows))
-
-    await state.clear()
-
-    await _notify_admins(
-        message.bot,
-        f"🪙 شروع پرداخت ارزی جدید\n\n"
-        f"🆔 آیدی عددی: {message.from_user.id}\n✏️ یوزرنیم: @{message.from_user.username if message.from_user.username else 'بدون یوزرنیم'}\n👤 نام: {message.from_user.full_name}\nروش: {unit}\nمبلغ: {amount:,} تومان "
-        f"({crypto_amount} {unit})\nشماره تراکنش: #{tx.id}\nوضعیت: در انتظار واریز کاربر",
-    )
 
 
 @router.callback_query(F.data.startswith("cryptocheck_"))
 async def crypto_check_cb(callback: CallbackQuery):
     tx_id = int(callback.data.split("_")[1])
-    async with async_session() as session:
-        tx = await session.get(WalletTransaction, tx_id)
-        if not tx or tx.status != "AWAITING_CRYPTO":
-            await callback.answer("این تراکنش دیگه در انتظار نیست.", show_alert=True)
+    user_id = callback.from_user.id
+    async with user_operation_lock(user_id):
+        async with async_session() as session:
+            tx = await session.get(WalletTransaction, tx_id)
+            if not tx or tx.status != "AWAITING_CRYPTO":
+                await callback.answer("این تراکنش دیگه در انتظار نیست.", show_alert=True)
+                return
+            crypto_cfg = await get_crypto_config_local(session)
+
+        from crypto import check_ton_payment, check_bsc_usdc_payment
+        if tx.method == "TON":
+            paid = await check_ton_payment(crypto_cfg.ton_address, tx.crypto_amount, tx.crypto_comment,
+                                            crypto_cfg.ton_api_key)
+        else:
+            paid = await check_bsc_usdc_payment(crypto_cfg.bsc_address, tx.crypto_amount, crypto_cfg.bscscan_api_key)
+
+        if not paid:
+            await callback.answer("⏳ هنوز تراکنشی پیدا نشد. چند دقیقه بعد از واریز دوباره امتحان کن.", show_alert=True)
             return
-        crypto_cfg = await get_crypto_config_local(session)
 
-    from crypto import check_ton_payment, check_bsc_usdc_payment
-    if tx.method == "TON":
-        paid = await check_ton_payment(crypto_cfg.ton_address, tx.crypto_amount, tx.crypto_comment,
-                                        crypto_cfg.ton_api_key)
-    else:
-        paid = await check_bsc_usdc_payment(crypto_cfg.bsc_address, tx.crypto_amount, crypto_cfg.bscscan_api_key)
+        async with async_session() as session:
+            tx = await session.get(WalletTransaction, tx_id)
+            if tx.status != "AWAITING_CRYPTO":
+                await callback.answer("قبلاً پردازش شده.", show_alert=True)
+                return
+            user = await session.scalar(select(User).where(User.user_id == tx.user_id))
+            user.balance += tx.amount
+            tx.status = "SUCCESS"
+            await session.commit()
 
-    if not paid:
-        await callback.answer("⏳ هنوز تراکنشی پیدا نشد. چند دقیقه بعد از واریز دوباره امتحان کن.", show_alert=True)
-        return
+        await callback.message.edit_text(f"✅ پرداخت تایید شد و {tx.amount:,} تومان به کیف پولت اضافه شد.")
+        await callback.answer("✅ شارژ شد!")
 
-    async with async_session() as session:
-        tx = await session.get(WalletTransaction, tx_id)
-        if tx.status != "AWAITING_CRYPTO":
-            await callback.answer("قبلاً پردازش شده.", show_alert=True)
-            return
-        user = await session.scalar(select(User).where(User.user_id == tx.user_id))
-        user.balance += tx.amount
-        tx.status = "SUCCESS"
-        await session.commit()
-
-    await callback.message.edit_text(f"✅ پرداخت تایید شد و {tx.amount:,} تومان به کیف پولت اضافه شد.")
-    await callback.answer("✅ شارژ شد!")
-
-    unit = "TON" if tx.method == "TON" else "USDC"
-    await _notify_admins(
-        callback.bot,
-        f"✅ پرداخت ارزی تکمیل شد\n\n"
-        f"🆔 آیدی عددی: {tx.user_id}\n✏️ یوزرنیم: @{user.username if user.username else 'بدون یوزرنیم'}\n👤 نام: {user.full_name}\nروش: {unit}\nمبلغ: {tx.amount:,} تومان\nشماره تراکنش: #{tx.id}",
-    )
+        unit = "TON" if tx.method == "TON" else "USDC"
+        await _notify_admins(
+            callback.bot,
+            f"✅ پرداخت ارزی تکمیل شد\n\n"
+            f"🆔 آیدی عددی: {tx.user_id}\n✏️ یوزرنیم: @{user.username if user.username else 'بدون یوزرنیم'}\n👤 نام: {user.full_name}\nروش: {unit}\nمبلغ: {tx.amount:,} تومان\nشماره تراکنش: #{tx.id}",
+        )
 
 
-async def get_crypto_config_local(session):
-    from database import CryptoConfig
-    cfg_row = await session.scalar(select(CryptoConfig).limit(1))
-    return cfg_row
+    async def get_crypto_config_local(session):
+        from database import CryptoConfig
+        cfg_row = await session.scalar(select(CryptoConfig).limit(1))
+        return cfg_row
 
 
-# ==================== درگاه پرداخت (HooshPay) ====================
+    # ==================== درگاه پرداخت (HooshPay) ====================
 
 @router.message(ButtonText("btn_wallet_gateway"))
 async def gateway_pay(message: Message, state: FSMContext):
@@ -649,99 +656,103 @@ async def gateway_amount_in(message: Message, state: FSMContext):
 
     user_id = message.from_user.id
 
-    from hooshpay import create_invoice, make_order_id
-    invoice, error = await create_invoice(amount, make_order_id(user_id), "شارژ کیف پول Lidso")
+    # جلوگیری از ساخت چند فاکتور برای یک عملیات همزمان.
+    async with user_operation_lock(user_id):
+        from hooshpay import create_invoice, make_order_id
+        invoice, error = await create_invoice(amount, make_order_id(user_id), "شارژ کیف پول Lidso")
 
-    if not invoice:
+        if not invoice:
+            await message.answer(
+                "⚠️ درگاه هوش‌پی در حال حاضر موقتاً در دسترس نیست.\n\n"
+                "لطفاً برای شارژ کیف پول از یکی از روش‌های زیر استفاده کنید:\n"
+                "💳 کارت به کارت\n"
+                "🪙 شارژ کریپتو",
+                reply_markup=await wallet_menu_keyboard(),
+            )
+            await _notify_admins(
+                message.bot,
+                f"⚠️ ساخت فاکتور HooshPay fail شد (کاربر {user_id}):\n{error}"
+            )
+            await state.clear()
+            return
+
+        async with async_session() as session:
+            tx = WalletTransaction(
+                user_id=user_id, amount=amount, transaction_type="DEPOSIT",
+                method="GATEWAY", status="AWAITING_GATEWAY",
+                gateway_invoice_uid=invoice["uid"],
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=GATEWAY_PAYMENT_MINUTES),
+                description=f"فاکتور HooshPay #{invoice['uid']}",
+            )
+            session.add(tx)
+            await session.commit()
+            await session.refresh(tx)
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 پرداخت", url=invoice["payment_url"])],
+            [InlineKeyboardButton(text="🔄 بررسی پرداخت", callback_data=f"gwcheck_{tx.id}")],
+        ])
         await message.answer(
-            "⚠️ درگاه هوش‌پی در حال حاضر موقتاً در دسترس نیست.\n\n"
-            "لطفاً برای شارژ کیف پول از یکی از روش‌های زیر استفاده کنید:\n"
-            "💳 کارت به کارت\n"
-            "🪙 شارژ کریپتو",
-            reply_markup=await wallet_menu_keyboard(),
-        )
-        await _notify_admins(
-            message.bot,
-            f"⚠️ ساخت فاکتور HooshPay fail شد (کاربر {user_id}):\n{error}"
+            f"🌐 مبلغ قابل پرداخت: {invoice['payable_amount']:,} تومان\n"
+            f"(ممکنه چند تومان با مبلغ درخواستی فرق داشته باشه تا پرداختت دقیق تشخیص داده بشه)\n\n"
+            f"روی «پرداخت» بزن، بعد از پرداخت خودکار یا با زدن «بررسی پرداخت» کیف پولت شارژ میشه.",
+            reply_markup=kb,
         )
         await state.clear()
-        return
 
-    async with async_session() as session:
-        tx = WalletTransaction(
-            user_id=user_id, amount=amount, transaction_type="DEPOSIT",
-            method="GATEWAY", status="AWAITING_GATEWAY",
-            gateway_invoice_uid=invoice["uid"],
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=GATEWAY_PAYMENT_MINUTES),
-            description=f"فاکتور HooshPay #{invoice['uid']}",
+        await _notify_admins(
+            message.bot,
+            f"🌐 شروع پرداخت از درگاه جدید\n\n"
+            f"🆔 آیدی عددی: {user_id}\n✏️ یوزرنیم: @{message.from_user.username if message.from_user.username else 'بدون یوزرنیم'}\n👤 نام: {message.from_user.full_name}\nروش: درگاه پرداخت (HooshPay)\nمبلغ: {amount:,} تومان\n"
+            f"شماره تراکنش: #{tx.id}\nوضعیت: در انتظار پرداخت کاربر",
         )
-        session.add(tx)
-        await session.commit()
-        await session.refresh(tx)
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 پرداخت", url=invoice["payment_url"])],
-        [InlineKeyboardButton(text="🔄 بررسی پرداخت", callback_data=f"gwcheck_{tx.id}")],
-    ])
-    await message.answer(
-        f"🌐 مبلغ قابل پرداخت: {invoice['payable_amount']:,} تومان\n"
-        f"(ممکنه چند تومان با مبلغ درخواستی فرق داشته باشه تا پرداختت دقیق تشخیص داده بشه)\n\n"
-        f"روی «پرداخت» بزن، بعد از پرداخت خودکار یا با زدن «بررسی پرداخت» کیف پولت شارژ میشه.",
-        reply_markup=kb,
-    )
-    await state.clear()
-
-    await _notify_admins(
-        message.bot,
-        f"🌐 شروع پرداخت از درگاه جدید\n\n"
-        f"🆔 آیدی عددی: {user_id}\n✏️ یوزرنیم: @{message.from_user.username if message.from_user.username else 'بدون یوزرنیم'}\n👤 نام: {message.from_user.full_name}\nروش: درگاه پرداخت (HooshPay)\nمبلغ: {amount:,} تومان\n"
-        f"شماره تراکنش: #{tx.id}\nوضعیت: در انتظار پرداخت کاربر",
-    )
 
 
 @router.callback_query(F.data.startswith("gwcheck_"))
 async def gateway_check_cb(callback: CallbackQuery):
     tx_id = int(callback.data.split("_")[1])
-    async with async_session() as session:
-        tx = await session.get(WalletTransaction, tx_id)
-        if not tx or tx.status != "AWAITING_GATEWAY":
-            await callback.answer("این تراکنش دیگه در انتظار نیست.", show_alert=True)
+    user_id = callback.from_user.id
+    async with user_operation_lock(user_id):
+        async with async_session() as session:
+            tx = await session.get(WalletTransaction, tx_id)
+            if not tx or tx.status != "AWAITING_GATEWAY":
+                await callback.answer("این تراکنش دیگه در انتظار نیست.", show_alert=True)
+                return
+
+        from hooshpay import verify_invoice
+        paid, data, error = await verify_invoice(tx.gateway_invoice_uid)
+
+        if error:
+            await callback.answer("خطا در بررسی وضعیت. چند لحظه دیگه دوباره امتحان کن.", show_alert=True)
             return
 
-    from hooshpay import verify_invoice
-    paid, data, error = await verify_invoice(tx.gateway_invoice_uid)
-
-    if error:
-        await callback.answer("خطا در بررسی وضعیت. چند لحظه دیگه دوباره امتحان کن.", show_alert=True)
-        return
-
-    if not paid:
-        await callback.answer("⏳ هنوز پرداخت ثبت نشده. اگه پرداخت کردی، چند ثانیه صبر کن و دوباره بزن.",
-                               show_alert=True)
-        return
-
-    async with async_session() as session:
-        tx = await session.get(WalletTransaction, tx_id)
-        if tx.status != "AWAITING_GATEWAY":
-            await callback.answer("قبلاً پردازش شده.", show_alert=True)
+        if not paid:
+            await callback.answer("⏳ هنوز پرداخت ثبت نشده. اگه پرداخت کردی، چند ثانیه صبر کن و دوباره بزن.",
+                                   show_alert=True)
             return
-        user = await session.scalar(select(User).where(User.user_id == tx.user_id))
-        user.balance += tx.amount
-        tx.status = "SUCCESS"
-        await session.commit()
 
-    await callback.message.edit_text(f"✅ پرداخت تایید شد و {tx.amount:,} تومان به کیف پولت اضافه شد.")
-    await callback.answer("✅ شارژ شد!")
+        async with async_session() as session:
+            tx = await session.get(WalletTransaction, tx_id)
+            if tx.status != "AWAITING_GATEWAY":
+                await callback.answer("قبلاً پردازش شده.", show_alert=True)
+                return
+            user = await session.scalar(select(User).where(User.user_id == tx.user_id))
+            user.balance += tx.amount
+            tx.status = "SUCCESS"
+            await session.commit()
 
-    await _notify_admins(
-        callback.bot,
-        f"✅ پرداخت از درگاه تکمیل شد\n\n"
-        f"🆔 آیدی عددی: {tx.user_id}\n✏️ یوزرنیم: @{user.username if user.username else 'بدون یوزرنیم'}\n👤 نام: {user.full_name}\nروش: درگاه پرداخت (HooshPay)\nمبلغ: {tx.amount:,} تومان\n"
-        f"شماره تراکنش: #{tx.id}",
-    )
+        await callback.message.edit_text(f"✅ پرداخت تایید شد و {tx.amount:,} تومان به کیف پولت اضافه شد.")
+        await callback.answer("✅ شارژ شد!")
+
+        await _notify_admins(
+            callback.bot,
+            f"✅ پرداخت از درگاه تکمیل شد\n\n"
+            f"🆔 آیدی عددی: {tx.user_id}\n✏️ یوزرنیم: @{user.username if user.username else 'بدون یوزرنیم'}\n👤 نام: {user.full_name}\nروش: درگاه پرداخت (HooshPay)\nمبلغ: {tx.amount:,} تومان\n"
+            f"شماره تراکنش: #{tx.id}",
+        )
 
 
-# ==================== کد تخفیف ====================
+    # ==================== کد تخفیف ====================
 
 @router.message(ButtonText("btn_wallet_discount"))
 async def promo_start(message: Message, state: FSMContext):
