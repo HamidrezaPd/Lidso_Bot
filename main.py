@@ -17,7 +17,7 @@ from handlers.shop import router as shop_router
 from handlers.wallet import router as wallet_router
 from handlers.admin import router as admin_router
 from handlers.trial import router as trial_router
-from middleware import ChannelMembershipMiddleware
+from middleware import ChannelMembershipMiddleware, UserCooldownMiddleware
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -58,6 +58,12 @@ async def main():
     # عضویت اجباری کانال (اگه از /admin تنظیم شده باشه) - قبل از هر هندلری چک میشه
     dp.message.middleware(ChannelMembershipMiddleware())
     dp.callback_query.middleware(ChannelMembershipMiddleware())
+
+    # Rate limit امنیتی: هر کاربر عادی حداکثر یک درخواست پردازش‌شده در هر ۳ ثانیه.
+    # ادمین‌ها مستثنا هستند. این middleware قبل از handlerها اجرا می‌شود و دیتابیس را تغییر نمی‌دهد.
+    cooldown_middleware = UserCooldownMiddleware()
+    dp.message.middleware(cooldown_middleware)
+    dp.callback_query.middleware(cooldown_middleware)
 
     # user_router اول چک میشه تا /start و ناوبری اصلی همیشه قطعی کار کنن، حتی اگه یه جای دیگه
     # (مثلاً یه متن دکمه‌ی دیگه) به‌اشتباه با یه فرمان قاطی بشه

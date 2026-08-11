@@ -75,3 +75,76 @@ class ChannelMembershipMiddleware(BaseMiddleware):
             except Exception:
                 pass
         return  # اجازه نمیده به هندلر اصلی برسه
+
+# ==================== Rate Limit / Cooldown امنیتی ====================
+# هر کاربر عادی حداکثر یک درخواست پردازش‌شده در هر ۳ ثانیه.
+# این محدودیت در حافظه نگه‌داری می‌شود و با restart ربات reset می‌شود.
+# ادمین‌ها مستثنا هستند تا پنل مدیریت و عملیات اضطراری دچار تأخیر نشود.
+
+import asyncio
+import time
+from collections import defaultdict
+
+
+class UserCooldownMiddleware(BaseMiddleware):
+    """Simple per-user cooldown to prevent request flooding without touching the DB."""
+
+    COOLDOWN_SECONDS = 3.0
+
+    def __init__(self, cooldown_seconds: float = COOLDOWN_SECONDS):
+        super().__init__()
+        self.cooldown_seconds = float(cooldown_seconds)
+        self._last_processed: dict[int, float] = {}
+        self._last_warning: dict[int, float] = {}
+        self._locks = defaultdict(asyncio.Lock)
+
+    async def __call__(self, handler, event, data):
+        user = getattr(event, "from_user", None)
+        if not user:
+            return await handler(event, data)
+
+        # ادمین‌ها برای جلوگیری از اختلال در پنل مدیریت و عملیات اضطراری محدود نمی‌شوند.
+        if user.id in cfg.ADMIN_IDS:
+            return await handler(event, data)
+
+        now = time.monotonic()
+
+        async with self._locks[user.id]:
+            last = self._last_processed.get(user.id)
+            if last is not None:
+                remaining = self.cooldown_seconds - (now - last)
+                if remaining > 0:
+                    # جلوی ارسال چندین پیام هشدار پشت سر هم را هم می‌گیریم.
+                    last_warning = self._last_warning.get(user.id, 0.0)
+                    if now - last_warning >= 1.0:
+                        self._last_warning[user.id] = now
+                        seconds = max(1, int(remaining + 0.999))
+                        text = f"⏳ لطفاً {seconds} ثانیه صبر کنید و بعد درخواست بعدی را ارسال کنید."
+
+                        if isinstance(event, CallbackQuery):
+                            try:
+                                await event.answer(text, show_alert=False)
+                            except Exception:
+                                pass
+                        elif isinstance(event, Message):
+                            try:
+                                await event.answer(text)
+                            except Exception:
+                                pass
+                    return
+
+            # زمان را بعد از اجرای موفق هندلر ثبت می‌کنیم تا پیام‌های نامرتبط/ردشده
+            # بی‌دلیل cooldown ایجاد نکنند.
+            result = await handler(event, data)
+            self._last_processed[user.id] = time.monotonic()
+
+            # پاک‌سازی سبک رکوردهای قدیمی؛ نیازی به دیتابیس یا migration ندارد.
+            if len(self._last_processed) > 10000:
+                cutoff = time.monotonic() - max(self.cooldown_seconds * 4, 60.0)
+                for uid, ts in list(self._last_processed.items()):
+                    if ts < cutoff:
+                        self._last_processed.pop(uid, None)
+                        self._last_warning.pop(uid, None)
+                        self._locks.pop(uid, None)
+
+            return result
