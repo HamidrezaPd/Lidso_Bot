@@ -233,7 +233,10 @@ async def pay_cancel(callback: CallbackQuery, state: FSMContext):
     tx_id = int(callback.data.split("_")[1])
     async with async_session() as session:
         tx = await session.get(WalletTransaction, tx_id)
-        if tx and tx.status in ("AWAITING_RECEIPT", "PENDING", "AWAITING_GATEWAY", "AWAITING_CRYPTO"):
+        if not tx or tx.user_id != callback.from_user.id:
+            await callback.answer("❌ این پرداخت متعلق به حساب شما نیست.", show_alert=True)
+            return
+        if tx.status in ("AWAITING_RECEIPT", "PENDING", "AWAITING_GATEWAY", "AWAITING_CRYPTO"):
             tx.status = "CANCELLED"
             await session.commit()
     await state.clear()
@@ -254,7 +257,10 @@ async def pay_resume(callback: CallbackQuery, state: FSMContext):
     tx_id = int(callback.data.split("_")[1])
     async with async_session() as session:
         tx = await session.get(WalletTransaction, tx_id)
-        if not tx or tx.status != "AWAITING_RECEIPT" or not _not_expired(tx):
+        if not tx or tx.user_id != callback.from_user.id:
+            await callback.answer("❌ این پرداخت متعلق به حساب شما نیست.", show_alert=True)
+            return
+        if tx.status != "AWAITING_RECEIPT" or not _not_expired(tx):
             await callback.answer("این پرداخت دیگه معتبر نیست.", show_alert=True)
             return
         card_number = await get_content(session, "card_number", "-")
@@ -583,7 +589,10 @@ async def crypto_check_cb(callback: CallbackQuery):
     async with user_operation_lock(user_id):
         async with async_session() as session:
             tx = await session.get(WalletTransaction, tx_id)
-            if not tx or tx.status != "AWAITING_CRYPTO":
+            if not tx or tx.user_id != callback.from_user.id:
+                await callback.answer("❌ این پرداخت متعلق به حساب شما نیست.", show_alert=True)
+                return
+            if tx.status != "AWAITING_CRYPTO":
                 await callback.answer("این تراکنش دیگه در انتظار نیست.", show_alert=True)
                 return
             crypto_cfg = await get_crypto_config_local(session)
@@ -715,7 +724,10 @@ async def gateway_check_cb(callback: CallbackQuery):
     async with user_operation_lock(user_id):
         async with async_session() as session:
             tx = await session.get(WalletTransaction, tx_id)
-            if not tx or tx.status != "AWAITING_GATEWAY":
+            if not tx or tx.user_id != callback.from_user.id:
+                await callback.answer("❌ این پرداخت متعلق به حساب شما نیست.", show_alert=True)
+                return
+            if tx.status != "AWAITING_GATEWAY":
                 await callback.answer("این تراکنش دیگه در انتظار نیست.", show_alert=True)
                 return
 
