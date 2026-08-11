@@ -148,7 +148,7 @@ async def process_purchase(message: Message, state: FSMContext):
     user_id = message.from_user.id
 
     # جلوگیری از اجرای همزمان/دوبرابر خرید برای یک کاربر.
-    async with user_operation_lock(user_id):
+    async with user_operation_lock(user_id, "purchase"):
         async with async_session() as session:
             plan = await session.scalar(
                 select(ServicePlan).where(
