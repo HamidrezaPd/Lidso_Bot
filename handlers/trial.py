@@ -21,6 +21,7 @@ from keyboards.user_kb import main_keyboard
 from panels import create_panel_account
 from submerge import apply_sub_merge
 import config as cfg
+from operation_locks import user_operation_lock
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -102,69 +103,73 @@ async def free_trial_pick(callback: CallbackQuery):
 async def _deliver_trial(message: Message, trial: TrialPlan, user_id_override: int = None):
     user_id = user_id_override or message.from_user.id
 
-    async with async_session() as session:
-        # چک نهایی دوباره (جلوگیری از race condition اگه کاربر دوبار سریع کلیک کنه)
-        user = await session.scalar(select(User).where(User.user_id == user_id))
-        if not user:
-            await message.answer("⚠️ لطفاً ابتدا با /start ربات را شروع کنید.")
-            return
-        if user.used_free_trial:
-            await message.answer("⚠️ شما قبلاً از تست رایگان استفاده کرده‌اید.", reply_markup=await main_keyboard())
-            return
+    # جلوگیری از race condition:
+    # اگر کاربر هم‌زمان چند بار روی تست رایگان کلیک کند،
+    # فقط یکی از درخواست‌ها اجازه‌ی عبور از چک used_free_trial و ساخت سرویس را دارد.
+    async with user_operation_lock(user_id, "free_trial"):
+        async with async_session() as session:
+            # چک نهایی دوباره (جلوگیری از race condition اگه کاربر دوبار سریع کلیک کنه)
+            user = await session.scalar(select(User).where(User.user_id == user_id))
+            if not user:
+                await message.answer("⚠️ لطفاً ابتدا با /start ربات را شروع کنید.")
+                return
+            if user.used_free_trial:
+                await message.answer("⚠️ شما قبلاً از تست رایگان استفاده کرده‌اید.", reply_markup=await main_keyboard())
+                return
 
-        panel = await session.get(Panel, trial.panel_id) if trial.panel_id else None
-        if not panel:
-            await message.answer(
-                "⚠️ این تست رایگان فعلاً به هیچ پنلی وصل نیست. لطفاً بعداً دوباره امتحان کنید یا با پشتیبانی تماس بگیرید.",
-                reply_markup=await main_keyboard(),
-            )
-            await _notify_admins(message.bot, f"⚠️ تست رایگان «{trial.name}» به هیچ پنلی وصل نیست.")
-            return
-
-        processing_text = await get_content(session, "trial_processing_text",
-                                             "⏳ در حال ساخت سرویس تست رایگان شما، چند لحظه صبر کنید...")
-        await message.answer(processing_text, reply_markup=await main_keyboard())
-
-        config_name = _trial_config_name(trial)
-
-        try:
-            config_link = await create_panel_account(panel, config_name, trial)
-            if not config_link or not str(config_link).startswith(
-                    ("http://", "https://", "vless://", "vmess://", "trojan://", "ss://")):
-                raise ValueError(f"پاسخ پنل معتبر به نظر نمی‌رسه: {config_link!r}")
-        except Exception as e:
-            logger.warning(f"خطا در ساخت تست رایگان برای کاربر {user_id}: {e}")
-            await message.answer(
-                "❌ متاسفانه در حال حاضر امکان ساخت تست رایگان وجود نداره. لطفاً بعداً دوباره امتحان کنید.",
-                reply_markup=await main_keyboard(),
-            )
-            await _notify_admins(message.bot, f"⚠️ ساخت تست رایگان برای کاربر {user_id} fail شد:\n{e}")
-            return
-
-        phantom_token = None
-        try:
-            config_link, submerge_error = await apply_sub_merge(config_link, trial, config_name, user_id, panel=panel)
-            phantom_token = config_link.split("/token/")[-1] if "/token/" in config_link else None
-            logger.info(f"🔗 نتیجه‌ی ادغام ساب برای {config_name}: phantom_token={phantom_token!r}")
-            if submerge_error:
-                await _notify_admins(
-                    message.bot,
-                    f"⚠️ ادغام ساب برای تست رایگان کاربر {user_id} fail شد (لینک خام تحویل داده شد):\n\n{submerge_error}",
+            panel = await session.get(Panel, trial.panel_id) if trial.panel_id else None
+            if not panel:
+                await message.answer(
+                    "⚠️ این تست رایگان فعلاً به هیچ پنلی وصل نیست. لطفاً بعداً دوباره امتحان کنید یا با پشتیبانی تماس بگیرید.",
+                    reply_markup=await main_keyboard(),
                 )
-        except Exception as e:
-            logger.warning(f"خطا در ادغام ساب تست رایگان کاربر {user_id}: {e}")
+                await _notify_admins(message.bot, f"⚠️ تست رایگان «{trial.name}» به هیچ پنلی وصل نیست.")
+                return
 
-        from datetime import datetime, timedelta, timezone
-        order = ServiceOrder(
-            user_id=user_id, plan_id=trial.id, service_name=trial.name,
-            config_name=config_name, config_link=config_link,
-            price=0, panel_id=panel.id, status="ACTIVE", is_trial=True,
-            phantom_token=phantom_token,
-            expire_at=datetime.now(timezone.utc) + timedelta(days=trial.duration_days or 1),
-        )
-        session.add(order)
-        user.used_free_trial = True
-        await session.commit()
+            processing_text = await get_content(session, "trial_processing_text",
+                                                 "⏳ در حال ساخت سرویس تست رایگان شما، چند لحظه صبر کنید...")
+            await message.answer(processing_text, reply_markup=await main_keyboard())
+
+            config_name = _trial_config_name(trial)
+
+            try:
+                config_link = await create_panel_account(panel, config_name, trial)
+                if not config_link or not str(config_link).startswith(
+                        ("http://", "https://", "vless://", "vmess://", "trojan://", "ss://")):
+                    raise ValueError(f"پاسخ پنل معتبر به نظر نمی‌رسه: {config_link!r}")
+            except Exception as e:
+                logger.warning(f"خطا در ساخت تست رایگان برای کاربر {user_id}: {e}")
+                await message.answer(
+                    "❌ متاسفانه در حال حاضر امکان ساخت تست رایگان وجود نداره. لطفاً بعداً دوباره امتحان کنید.",
+                    reply_markup=await main_keyboard(),
+                )
+                await _notify_admins(message.bot, f"⚠️ ساخت تست رایگان برای کاربر {user_id} fail شد:\n{e}")
+                return
+
+            phantom_token = None
+            try:
+                config_link, submerge_error = await apply_sub_merge(config_link, trial, config_name, user_id, panel=panel)
+                phantom_token = config_link.split("/token/")[-1] if "/token/" in config_link else None
+                logger.info(f"🔗 نتیجه‌ی ادغام ساب برای {config_name}: phantom_token={phantom_token!r}")
+                if submerge_error:
+                    await _notify_admins(
+                        message.bot,
+                        f"⚠️ ادغام ساب برای تست رایگان کاربر {user_id} fail شد (لینک خام تحویل داده شد):\n\n{submerge_error}",
+                    )
+            except Exception as e:
+                logger.warning(f"خطا در ادغام ساب تست رایگان کاربر {user_id}: {e}")
+
+            from datetime import datetime, timedelta, timezone
+            order = ServiceOrder(
+                user_id=user_id, plan_id=trial.id, service_name=trial.name,
+                config_name=config_name, config_link=config_link,
+                price=0, panel_id=panel.id, status="ACTIVE", is_trial=True,
+                phantom_token=phantom_token,
+                expire_at=datetime.now(timezone.utc) + timedelta(days=trial.duration_days or 1),
+            )
+            session.add(order)
+            user.used_free_trial = True
+            await session.commit()
 
     caption = (
         f"🎉 تست رایگان شما با موفقیت فعال شد!\n\n"
