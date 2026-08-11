@@ -59,7 +59,8 @@ async def main():
     dp.message.middleware(ChannelMembershipMiddleware())
     dp.callback_query.middleware(ChannelMembershipMiddleware())
 
-    # Rate limit امنیتی: هر کاربر عادی حداکثر یک درخواست پردازش‌شده در هر ۳ ثانیه.
+    # امنیت درخواست‌ها: cooldown دو ثانیه‌ای + تشخیص تکرار غیرعادی همان درخواست.
+    # ۱۰ تکرار دقیقاً یک درخواست در ۲۰ ثانیه => محدودیت موقت ۶۰ ثانیه‌ای.
     # ادمین‌ها مستثنا هستند. این middleware قبل از handlerها اجرا می‌شود و دیتابیس را تغییر نمی‌دهد.
     cooldown_middleware = UserCooldownMiddleware()
     dp.message.middleware(cooldown_middleware)
