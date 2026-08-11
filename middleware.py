@@ -89,7 +89,7 @@ from collections import defaultdict
 class UserCooldownMiddleware(BaseMiddleware):
     """Simple per-user cooldown to prevent request flooding without touching the DB."""
 
-    COOLDOWN_SECONDS = 3.0
+    COOLDOWN_SECONDS = 2.0
 
     def __init__(self, cooldown_seconds: float = COOLDOWN_SECONDS):
         super().__init__()
@@ -119,7 +119,7 @@ class UserCooldownMiddleware(BaseMiddleware):
                     if now - last_warning >= 1.0:
                         self._last_warning[user.id] = now
                         seconds = max(1, int(remaining + 0.999))
-                        text = f"⏳ لطفاً {seconds} ثانیه صبر کنید و بعد درخواست بعدی را ارسال کنید."
+                        text = f"⏳ بین هر درخواست {self.cooldown_seconds:g} ثانیه صبر کنید و سپس درخواست بعدی را ارسال کنید."
 
                         if isinstance(event, CallbackQuery):
                             try:
