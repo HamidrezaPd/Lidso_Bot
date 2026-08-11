@@ -639,10 +639,16 @@ async def gateway_amount_in(message: Message, state: FSMContext):
 
     if not invoice:
         await message.answer(
-            "❌ در حال حاضر درگاه پرداخت در دسترس نیست. لطفاً از «کارت به کارت» یا «پرداخت ارزی» استفاده کنید.",
+            "⚠️ درگاه هوش‌پی در حال حاضر موقتاً در دسترس نیست.\n\n"
+            "لطفاً برای شارژ کیف پول از یکی از روش‌های زیر استفاده کنید:\n"
+            "💳 کارت به کارت\n"
+            "🪙 شارژ کریپتو",
             reply_markup=await wallet_menu_keyboard(),
         )
-        await _notify_admins(message.bot, f"⚠️ ساخت فاکتور HooshPay fail شد (کاربر {user_id}):\n{error}")
+        await _notify_admins(
+            message.bot,
+            f"⚠️ ساخت فاکتور HooshPay fail شد (کاربر {user_id}):\n{error}"
+        )
         await state.clear()
         return
 

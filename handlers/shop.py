@@ -178,6 +178,10 @@ async def process_purchase(message: Message, state: FSMContext):
                 f"💵 مبلغ مورد نیاز: {final_price:,} تومان\n\n"
                 f"برای افزایش موجودی وارد بخش «کیف پول» شوید."
             )
+            
+            # خیلی مهم: از حالت انتخاب/خرید سرویس خارج شو
+            await state.clear()
+
             await message.answer(need_text, reply_markup=await wallet_menu_keyboard())
             return
 
