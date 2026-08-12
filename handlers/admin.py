@@ -23,6 +23,7 @@ from states.admin_states import (
     UserSearchStates, RejectReceiptStates,
 )
 import config as cfg
+from operation_locks import user_operation_lock
 
 router = Router()
 router.message.filter(F.from_user.id.in_(cfg.ADMIN_IDS))
@@ -2175,17 +2176,22 @@ async def broadcast_cancel(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("tx_approve_"))
 async def cb_tx_approve(callback: CallbackQuery):
     tx_id = int(callback.data.split("_")[-1])
-    async with async_session() as session:
-        tx = await session.get(WalletTransaction, tx_id)
-        if not tx or tx.status != "PENDING":
-            await callback.answer("این تراکنش قبلاً پردازش شده.", show_alert=True)
-            return
-        user = await session.scalar(select(User).where(User.user_id == tx.user_id))
-        user.balance += tx.amount
-        tx.status = "SUCCESS"
-        tx.handled_by = callback.from_user.id
-        await session.commit()
-        amount, target_user = tx.amount, tx.user_id
+    # جلوگیری از تایید هم‌زمان یک تراکنش توسط چند callback/admin.
+    async with user_operation_lock(tx_id):
+        async with async_session() as session:
+            tx = await session.get(WalletTransaction, tx_id)
+            if not tx or tx.status != "PENDING":
+                await callback.answer("این تراکنش قبلاً پردازش شده.", show_alert=True)
+                return
+            user = await session.scalar(select(User).where(User.user_id == tx.user_id))
+            if not user:
+                await callback.answer("کاربر این تراکنش پیدا نشد.", show_alert=True)
+                return
+            user.balance += tx.amount
+            tx.status = "SUCCESS"
+            tx.handled_by = callback.from_user.id
+            await session.commit()
+            amount, target_user = tx.amount, tx.user_id
 
     try:
         if callback.message.photo:
@@ -2251,19 +2257,21 @@ async def reject_receipt_reason(message: Message, state: FSMContext):
 
 
 async def _reject_transaction(source, state: FSMContext, tx_id: int, reason: str | None):
-    async with async_session() as session:
-        tx = await session.get(WalletTransaction, tx_id)
-        if not tx or tx.status != "PENDING":
-            await state.clear()
-            if isinstance(source, CallbackQuery):
-                await source.answer("این تراکنش قبلاً پردازش شده.", show_alert=True)
-            else:
-                await source.answer("این تراکنش قبلاً پردازش شده.")
-            return
-        tx.status = "REJECTED"
-        tx.handled_by = source.from_user.id
-        target_user = tx.user_id
-        await session.commit()
+    # همان تراکنش نباید هم‌زمان توسط چند مسیر رد/تایید شود.
+    async with user_operation_lock(tx_id):
+        async with async_session() as session:
+            tx = await session.get(WalletTransaction, tx_id)
+            if not tx or tx.status != "PENDING":
+                await state.clear()
+                if isinstance(source, CallbackQuery):
+                    await source.answer("این تراکنش قبلاً پردازش شده.", show_alert=True)
+                else:
+                    await source.answer("این تراکنش قبلاً پردازش شده.")
+                return
+            tx.status = "REJECTED"
+            tx.handled_by = source.from_user.id
+            target_user = tx.user_id
+            await session.commit()
 
     try:
         admin_message = source.message if isinstance(source, CallbackQuery) else None
