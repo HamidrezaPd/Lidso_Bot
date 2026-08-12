@@ -162,7 +162,9 @@ async def process_purchase(message: Message, state: FSMContext):
                 await message.answer("❌ این پلن دیگر موجود نیست.")
                 return
 
-            user = await session.scalar(select(User).where(User.user_id == user_id))
+            user = await session.scalar(
+                select(User).where(User.user_id == user_id).with_for_update()
+            )
             if not user:
                 await message.answer("❌ اطلاعات حساب شما پیدا نشد. لطفا /start را بزنید.")
                 return
@@ -207,7 +209,7 @@ async def process_purchase(message: Message, state: FSMContext):
                 used_promo_code = user.pending_discount_code
                 user.pending_discount_code = None
                 user.pending_discount_percent = None
-                promo_row = await session.scalar(select(DiscountCode).where(DiscountCode.code == used_promo_code))
+                promo_row = await session.scalar(select(DiscountCode).where(DiscountCode.code == used_promo_code).with_for_update())
                 if promo_row:
                     promo_row.current_uses += 1
                 session.add(UsedDiscount(user_id=user_id, code=used_promo_code))
@@ -217,7 +219,7 @@ async def process_purchase(message: Message, state: FSMContext):
                 select(StockConfig).where(
                     StockConfig.service_id == plan.id,
                     StockConfig.status == "AVAILABLE",
-                )
+                ).with_for_update()
             )
 
             order = None
