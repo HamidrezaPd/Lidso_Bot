@@ -390,21 +390,21 @@ async def do_renew(callback: CallbackQuery):
 
     # ==================== دکمه‌های سفارشی منوی اصلی (اضافه‌شده از /admin) ====================
 
-    class CustomMenuButtonText(BaseFilter):
-        async def __call__(self, message: Message):
-            if not message.text:
-                return False
-            async with async_session() as session:
-                btn = await session.scalar(
-                    select(MenuButton).where(
-                        MenuButton.is_custom == True,
-                        MenuButton.enabled == True,
-                        MenuButton.label == message.text,
-                    )
-                )
-            if btn:
-                return {"custom_button": btn}
+class CustomMenuButtonText(BaseFilter):
+    async def __call__(self, message: Message):
+        if not message.text:
             return False
+        async with async_session() as session:
+            btn = await session.scalar(
+                select(MenuButton).where(
+                    MenuButton.is_custom == True,
+                    MenuButton.enabled == True,
+                    MenuButton.label == message.text,
+                )
+            )
+        if btn:
+            return {"custom_button": btn}
+        return False
 
 
 @router.message(CustomMenuButtonText())
