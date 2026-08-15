@@ -25,25 +25,13 @@ from database import async_session, ServiceOrder, StockConfig, Panel
 _token_cache: dict[int, tuple[str, float]] = {}  # panel.id -> (token, expires_at_unix)
 TOKEN_TTL_SECONDS = 20 * 60
 
-# سرویس‌های Unlimited از نظر مدت و نوع پلن نامحدود هستند، اما برای جلوگیری از
-# مصرف بی‌نهایت در پنل اصلی، سقف دیتای فنی 300 گیگابایت دارند.
-UNLIMITED_DATA_LIMIT_GB = 300
-
-
-def _data_limit_bytes(plan) -> int:
-    """سقف دیتای اکانت پنل را بر حسب بایت برمی‌گرداند.
-
-    volume_gb=0 برای Unlimited در دیتابیس حفظ می‌شود تا منطق نوع پلن،
-    نام‌گذاری و HWID خراب نشود؛ اما در پنل اصلی Unlimited با سقف 300GB ساخته/تمدید می‌شود.
-    """
+def _data_limit_bytes(plan) -> int | None:
+    """0 GB = true unlimited; positive GB = exact configured limit."""
     volume_gb = getattr(plan, "volume_gb", 0) or 0
-    if getattr(plan, "category", "") == "LidsoUnlimited":
-        # volume_gb is the technical data cap for Unlimited plans.
-        # 0 keeps the historical/default 300GB cap.
-        volume_gb = volume_gb or UNLIMITED_DATA_LIMIT_GB
-    elif volume_gb <= 0:
-        return 0
+    if volume_gb <= 0:
+        return None
     return int(volume_gb * (1024 ** 3))
+
 
 
 def _fix_subscription_link(panel: Panel, raw_link: str) -> str:
@@ -267,13 +255,15 @@ async def _marzban_create(panel: Panel, config_name: str, plan) -> str:
     payload = {
         "username": config_name,
         "status": "active",
-        "data_limit": data_limit,
-        "data_limit_reset_strategy": "no_reset",
         "expire": expire_value,
         "on_hold_expire_duration": None,
         "proxies": {protocol: {}},
         "inbounds": {protocol: tags},
     }
+
+    if data_limit is not None:
+        payload["data_limit"] = data_limit
+        payload["data_limit_reset_strategy"] = "no_reset"
 
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
@@ -408,8 +398,6 @@ async def _pasarguard_create(panel: Panel, config_name: str, plan) -> str:
     payload = {
         "username": config_name,
         "status": "active",
-        "data_limit": data_limit,
-        "data_limit_reset_strategy": "no_reset",
         "expire": expire_value,
         "on_hold_expire_duration": None,
         "note": "",
@@ -419,6 +407,10 @@ async def _pasarguard_create(panel: Panel, config_name: str, plan) -> str:
 
     if getattr(plan, "hwid_limit", 0):
         payload["hwid_limit"] = plan.hwid_limit
+
+    if data_limit is not None:
+        payload["data_limit"] = data_limit
+        payload["data_limit_reset_strategy"] = "no_reset"
 
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
