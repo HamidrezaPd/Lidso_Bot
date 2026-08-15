@@ -25,6 +25,26 @@ from database import async_session, ServiceOrder, StockConfig, Panel
 _token_cache: dict[int, tuple[str, float]] = {}  # panel.id -> (token, expires_at_unix)
 TOKEN_TTL_SECONDS = 20 * 60
 
+# سرویس‌های Unlimited از نظر مدت و نوع پلن نامحدود هستند، اما برای جلوگیری از
+# مصرف بی‌نهایت در پنل اصلی، سقف دیتای فنی 300 گیگابایت دارند.
+UNLIMITED_DATA_LIMIT_GB = 300
+
+
+def _data_limit_bytes(plan) -> int:
+    """سقف دیتای اکانت پنل را بر حسب بایت برمی‌گرداند.
+
+    volume_gb=0 برای Unlimited در دیتابیس حفظ می‌شود تا منطق نوع پلن،
+    نام‌گذاری و HWID خراب نشود؛ اما در پنل اصلی Unlimited با سقف 300GB ساخته/تمدید می‌شود.
+    """
+    volume_gb = getattr(plan, "volume_gb", 0) or 0
+    if getattr(plan, "category", "") == "LidsoUnlimited":
+        # volume_gb is the technical data cap for Unlimited plans.
+        # 0 keeps the historical/default 300GB cap.
+        volume_gb = volume_gb or UNLIMITED_DATA_LIMIT_GB
+    elif volume_gb <= 0:
+        return 0
+    return int(volume_gb * (1024 ** 3))
+
 
 def _fix_subscription_link(panel: Panel, raw_link: str) -> str:
     """
@@ -234,7 +254,7 @@ async def _marzban_create(panel: Panel, config_name: str, plan) -> str:
       باید از /docs همون پنل چک بشه - فعلاً نادیده گرفته میشه (توی PasarGuard که hwid_limit داره فرق داره)
     """
     token = await _marzban_get_token(panel)
-    data_limit = int(plan.volume_gb * (1024 ** 3)) if plan.volume_gb else 0
+    data_limit = _data_limit_bytes(plan)
     # expire اینجا Unix timestamp هست (نه ISO مثل PasarGuard) - طبق مستندات رسمی این پنل
     if plan.duration_days == 0:
         expire_value = 0
@@ -298,7 +318,7 @@ async def _marzban_create(panel: Panel, config_name: str, plan) -> str:
 
 async def _marzban_renew(panel: Panel, config_name: str, plan) -> None:
     token = await _marzban_get_token(panel)
-    data_limit = int(plan.volume_gb * (1024 ** 3)) if plan.volume_gb else 0
+    data_limit = _data_limit_bytes(plan)
     # duration_days=0 یعنی نامحدود (بدون تاریخ انقضا) - expire اینجا Unix timestamp UTC هست
     # (طبق مستندات رسمی این پنل) نه ISO format که PasarGuard استفاده می‌کنه
     if plan.duration_days == 0:
@@ -379,7 +399,7 @@ async def _pasarguard_get_user(panel: Panel, config_name: str) -> dict:
 
 async def _pasarguard_create(panel: Panel, config_name: str, plan) -> str:
     token = await _pasarguard_get_token(panel)
-    data_limit = int(plan.volume_gb * (1024 ** 3)) if plan.volume_gb else 0
+    data_limit = _data_limit_bytes(plan)
     if plan.duration_days == 0:
         expire_value = 0
     else:
@@ -424,7 +444,7 @@ async def _pasarguard_create(panel: Panel, config_name: str, plan) -> str:
 
 async def _pasarguard_renew(panel: Panel, config_name: str, plan) -> None:
     token = await _pasarguard_get_token(panel)
-    data_limit = int(plan.volume_gb * (1024 ** 3)) if plan.volume_gb else 0
+    data_limit = _data_limit_bytes(plan)
     if plan.duration_days == 0:
         expire_value = 0
     else:

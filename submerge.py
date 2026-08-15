@@ -105,8 +105,10 @@ async def apply_sub_merge(raw_link: str, plan, config_name: str, telegram_user_i
     # مقدار 0 توی این API یعنی "نامحدود"، پس برای پلن‌های واقعاً کم‌حجم (مثل تست 0.1 گیگ)
     # باید حداقل 1 فرستاده بشه تا اشتباهاً نامحدود نشون داده نشه.
     raw_volume = plan.volume_gb or 0
-    if raw_volume == 0:
-        volume_gb_int = 0  # پلن واقعاً نامحدوده
+    if getattr(plan, "category", "") == "LidsoUnlimited":
+        # برای Unlimited، volume_gb سقف فنی Data Limit است.
+        # مقدار 0 یعنی سقف پیش‌فرض 300GB.
+        volume_gb_int = raw_volume if raw_volume > 0 else 300
     else:
         volume_gb_int = max(1, round(raw_volume))
 

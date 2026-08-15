@@ -39,6 +39,7 @@ class PlanAddStates(StatesGroup):
 
 class ServiceEditStates(StatesGroup):
     waiting_new_price = State()
+    waiting_new_volume = State()
     waiting_new_hwid = State()
     waiting_new_duration = State()
     waiting_new_name = State()

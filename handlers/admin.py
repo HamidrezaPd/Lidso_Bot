@@ -261,6 +261,7 @@ async def cb_editplan(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ ویرایش نام پلن", callback_data=f"planname_{plan_id}")],
         [InlineKeyboardButton(text="✏️ ویرایش قیمت", callback_data=f"planprice_{plan_id}")],
+        [InlineKeyboardButton(text="📦 ویرایش حجم / Data Limit", callback_data=f"planvolume_{plan_id}")],
         [InlineKeyboardButton(text="🔢 ویرایش HWID (0=دست نزن)", callback_data=f"planhwid_{plan_id}")],
         [InlineKeyboardButton(text="⏳ ویرایش مدت زمان (0=نامحدود)", callback_data=f"planduration_{plan_id}")],
         [InlineKeyboardButton(text="🖼 تنظیم آیکون ایموجی پرمیوم", callback_data=f"planicon_{plan_id}")],
@@ -284,14 +285,16 @@ async def cb_editplan(callback: CallbackQuery):
     duration_fa = "نامحدود ♾" if plan.duration_days == 0 else f"{plan.duration_days} روز"
     icon_status = "دارد ✅" if plan.icon_custom_emoji_id else "ندارد"
     style_fa = {"primary": "🔵 آبی", "success": "🟢 سبز", "danger": "🔴 قرمز"}.get(plan.style, "پیش‌فرض")
-    await callback.message.edit_text(
+    volume_fa = f"{plan.volume_gb:,} GB" if plan.volume_gb else "پیش‌فرض Unlimited (300 GB)"
+    text = (
         f"🛍 {plan.name}\n\nدسته: {plan.category}\nقیمت: {plan.price:,} تومان\n"
+        f"📦 حجم / Data Limit: {volume_fa}\n"
         f"HWID: {plan.hwid_limit if plan.hwid_limit else 'دست‌نزده (0)'}\n"
         f"مدت زمان: {duration_fa}\n"
         f"وضعیت: {'فعال ✅' if plan.active else 'غیرفعال ❌'}\n"
-        f"🖼 آیکون ایموجی پرمیوم: {icon_status}\n🎨 رنگ فعلی: {style_fa}",
-        reply_markup=kb,
+        f"🖼 آیکون ایموجی پرمیوم: {icon_status}\n🎨 رنگ فعلی: {style_fa}"
     )
+    await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
 
 
@@ -320,6 +323,54 @@ async def process_new_duration(message: Message, state: FSMContext):
     duration_fa = "نامحدود ♾" if duration_days == 0 else f"{duration_days} روز"
     await message.answer(f"✅ مدت زمان پلن «{plan_name}» به «{duration_fa}» تغییر کرد.",
                           reply_markup=admin_main_menu_kb())
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("planvolume_"))
+async def cb_planvolume(callback: CallbackQuery, state: FSMContext):
+    plan_id = int(callback.data.split("_")[1])
+    await state.update_data(plan_id=plan_id)
+    await callback.message.answer(
+        "حجم جدید سرویس را به گیگابایت وارد کن.\n\n"
+        "مثال: 10 ، 30 ، 50 ، 100 ، 300\n"
+        "برای پلن Unlimited هم می‌توانی حجم فنی دلخواه تعیین کنی.\n"
+        "اگر 0 بفرستی، برای Unlimited سقف پیش‌فرض 300GB اعمال می‌شود."
+    )
+    await state.set_state(ServiceEditStates.waiting_new_volume)
+    await callback.answer()
+
+
+@router.message(ServiceEditStates.waiting_new_volume)
+async def process_new_volume(message: Message, state: FSMContext):
+    raw = (message.text or "").strip().replace(",", "")
+    if not raw.isdigit():
+        await message.answer("❌ فقط عدد صحیح وارد کنید (مثلاً 100 یا 300). برای پیش‌فرض Unlimited عدد 0 را بفرستید:")
+        return
+
+    new_volume = int(raw)
+    if new_volume < 0 or new_volume > 10000:
+        await message.answer("❌ حجم باید بین 0 تا 10000 گیگابایت باشد.")
+        return
+
+    data = await state.get_data()
+    async with async_session() as session:
+        plan = await session.get(ServicePlan, data["plan_id"])
+        if not plan:
+            await message.answer("❌ پلن پیدا نشد.", reply_markup=admin_main_menu_kb())
+            await state.clear()
+            return
+
+        plan.volume_gb = new_volume
+        await session.commit()
+        plan_name = plan.name
+        category = plan.category
+
+    shown_volume = 300 if category == "LidsoUnlimited" and new_volume == 0 else new_volume
+    suffix = " (پیش‌فرض فنی Unlimited)" if category == "LidsoUnlimited" and new_volume == 0 else ""
+    await message.answer(
+        f"✅ حجم / Data Limit پلن «{plan_name}» به «{shown_volume:,} GB» تغییر کرد{suffix}.",
+        reply_markup=admin_main_menu_kb(),
+    )
     await state.clear()
 
 

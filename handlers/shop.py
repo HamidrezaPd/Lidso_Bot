@@ -188,10 +188,10 @@ async def process_purchase(message: Message, state: FSMContext):
         # ---- کسر موجودی و ثبت آمار ----
         user.balance -= final_price
         user.total_purchases += 1
-        if plan.volume_gb and plan.volume_gb > 0:
+        if plan.category != "LidsoUnlimited" and plan.volume_gb and plan.volume_gb > 0:
             user.total_volume += plan.volume_gb
         else:
-            # پلن نامحدود (volume_gb=0) - توی حجم گیگابایتی حساب نمیشه، تعداد جدا نگه‌داری میشه
+            # Unlimited حتی اگر Data Limit فنی داشته باشد، در آمار حجم گیگابایتی حساب نمی‌شود.
             user.total_unlimited_purchases += 1
         user.total_spent += final_price
 
