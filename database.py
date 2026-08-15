@@ -375,7 +375,6 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
         # ستون‌های جدیدی که به جدول‌های از قبل موجود اضافه شدن، اینجا با migration امن ست میشن
         await _add_column_if_missing(conn, "bot_contents", "entities", "TEXT")
-        await _add_column_if_missing(conn, "bot_contents", "default_entities", "TEXT")
         await _add_column_if_missing(conn, "bot_contents", "default_value", "TEXT")
         await _add_column_if_missing(conn, "bot_contents", "use_default", "BOOLEAN DEFAULT 1")
         await _add_column_if_missing(conn, "bot_contents", "default_position", "TEXT DEFAULT 'before'")
@@ -404,6 +403,16 @@ async def init_db():
         await _add_column_if_missing(conn, "wallet_transactions", "expire_notified", "BOOLEAN DEFAULT 0")
         await _add_column_if_missing(conn, "users", "total_unlimited_purchases", "INTEGER DEFAULT 0")
         await _add_column_if_missing(conn, "users", "used_free_trial", "BOOLEAN DEFAULT 0")
+
+        # همگام‌سازی پلن‌های Unlimited قدیمی: اگر HWID مثلاً 2 است،
+        # max_users هم باید 2 باشد تا نام سرویس و PhantomHubs هر دو 2 کاربره شوند.
+        await conn.exec_driver_sql(
+            "UPDATE service_plans "
+            "SET max_users = hwid_limit "
+            "WHERE category = 'LidsoUnlimited' "
+            "AND hwid_limit > 0 "
+            "AND (max_users IS NULL OR max_users <> hwid_limit)"
+        )
 
     # اضافه کردن دکمه‌ی «تست رایگان» به منوی ربات‌هایی که از قبل نصب/راه‌اندازی شدن (نه فقط نصب‌های جدید)
     async with async_session() as session:

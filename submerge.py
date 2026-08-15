@@ -27,7 +27,13 @@ def _device_limit_for_plan(plan) -> int:
     اگه plan این فیلدها رو نداشت (مثلاً TrialPlan)، پیش‌فرض 0 (نامحدود) در نظر گرفته میشه."""
     category = getattr(plan, "category", None)
     is_user_based = category == "LidsoUnlimited" or getattr(plan, "volume_gb", 0) == 0
-    return getattr(plan, "max_users", 0) if is_user_based else 0
+    if not is_user_based:
+        return 0
+
+    # برای Unlimited، HWID منبع اصلی تعداد کاربر است.
+    # این fallback باعث می‌شود پلن‌های قدیمی با max_users=1 ولی HWID=2
+    # هم بلافاصله با device_limit=2 در PhantomHubs ثبت شوند.
+    return getattr(plan, "hwid_limit", 0) or getattr(plan, "max_users", 0)
 
 
 def _generate_token(config_name: str) -> str:

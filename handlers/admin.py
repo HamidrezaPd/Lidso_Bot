@@ -23,7 +23,6 @@ from states.admin_states import (
     UserSearchStates, RejectReceiptStates,
 )
 import config as cfg
-from operation_locks import user_operation_lock
 
 router = Router()
 router.message.filter(F.from_user.id.in_(cfg.ADMIN_IDS))
@@ -341,7 +340,14 @@ async def process_new_hwid(message: Message, state: FSMContext):
     data = await state.get_data()
     async with async_session() as session:
         plan = await session.get(ServicePlan, data["plan_id"])
-        plan.hwid_limit = int(message.text.strip())
+        new_hwid = int(message.text.strip())
+        plan.hwid_limit = new_hwid
+
+        # برای پلن‌های Unlimited، تعداد کاربر واقعی باید با HWID یکی باشد.
+        # این مقدار توسط volume_tag_from_plan و PhantomHubs هم استفاده می‌شود.
+        if new_hwid > 0 and (plan.category == "LidsoUnlimited" or plan.volume_gb == 0):
+            plan.max_users = new_hwid
+
         await session.commit()
         plan_name = plan.name
     await message.answer(f"✅ HWID پلن «{plan_name}» به‌روزرسانی شد.", reply_markup=admin_main_menu_kb())
@@ -948,11 +954,18 @@ async def plan_new_hwid(message: Message, state: FSMContext):
         return
     hwid_limit = int(message.text.strip())
     data = await state.get_data()
+
+    # در پلن‌های Unlimited، HWID همان تعداد کاربر مجاز است.
+    # قبلاً max_users همیشه 1 ذخیره می‌شد و باعث می‌شد پلن 2 کاربره
+    # هنگام ساخت نام و ارسال به PhantomHubs به 1user تبدیل شود.
+    is_unlimited = data["category_prefix"] == "LidsoUnlimited" or data["volume_gb"] == 0
+    max_users = hwid_limit if is_unlimited and hwid_limit > 0 else 1
+
     async with async_session() as session:
         session.add(ServicePlan(
             category=data["category_prefix"], name=data["name"], volume_gb=data["volume_gb"],
             price=data["price"], duration_id=data["duration_id"], duration_days=data["duration_days"],
-            delivery_mode=data["delivery_mode"], max_users=1, hwid_limit=hwid_limit,
+            delivery_mode=data["delivery_mode"], max_users=max_users, hwid_limit=hwid_limit,
         ))
         await session.commit()
     duration_fa = "نامحدود ♾" if data["duration_days"] == 0 else f"{data['duration_days']} روزه"
@@ -2176,22 +2189,17 @@ async def broadcast_cancel(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("tx_approve_"))
 async def cb_tx_approve(callback: CallbackQuery):
     tx_id = int(callback.data.split("_")[-1])
-    # جلوگیری از تایید هم‌زمان یک تراکنش توسط چند callback/admin.
-    async with user_operation_lock(tx_id):
-        async with async_session() as session:
-            tx = await session.get(WalletTransaction, tx_id)
-            if not tx or tx.status != "PENDING":
-                await callback.answer("این تراکنش قبلاً پردازش شده.", show_alert=True)
-                return
-            user = await session.scalar(select(User).where(User.user_id == tx.user_id))
-            if not user:
-                await callback.answer("کاربر این تراکنش پیدا نشد.", show_alert=True)
-                return
-            user.balance += tx.amount
-            tx.status = "SUCCESS"
-            tx.handled_by = callback.from_user.id
-            await session.commit()
-            amount, target_user = tx.amount, tx.user_id
+    async with async_session() as session:
+        tx = await session.get(WalletTransaction, tx_id)
+        if not tx or tx.status != "PENDING":
+            await callback.answer("این تراکنش قبلاً پردازش شده.", show_alert=True)
+            return
+        user = await session.scalar(select(User).where(User.user_id == tx.user_id))
+        user.balance += tx.amount
+        tx.status = "SUCCESS"
+        tx.handled_by = callback.from_user.id
+        await session.commit()
+        amount, target_user = tx.amount, tx.user_id
 
     try:
         if callback.message.photo:
@@ -2257,21 +2265,19 @@ async def reject_receipt_reason(message: Message, state: FSMContext):
 
 
 async def _reject_transaction(source, state: FSMContext, tx_id: int, reason: str | None):
-    # همان تراکنش نباید هم‌زمان توسط چند مسیر رد/تایید شود.
-    async with user_operation_lock(tx_id):
-        async with async_session() as session:
-            tx = await session.get(WalletTransaction, tx_id)
-            if not tx or tx.status != "PENDING":
-                await state.clear()
-                if isinstance(source, CallbackQuery):
-                    await source.answer("این تراکنش قبلاً پردازش شده.", show_alert=True)
-                else:
-                    await source.answer("این تراکنش قبلاً پردازش شده.")
-                return
-            tx.status = "REJECTED"
-            tx.handled_by = source.from_user.id
-            target_user = tx.user_id
-            await session.commit()
+    async with async_session() as session:
+        tx = await session.get(WalletTransaction, tx_id)
+        if not tx or tx.status != "PENDING":
+            await state.clear()
+            if isinstance(source, CallbackQuery):
+                await source.answer("این تراکنش قبلاً پردازش شده.", show_alert=True)
+            else:
+                await source.answer("این تراکنش قبلاً پردازش شده.")
+            return
+        tx.status = "REJECTED"
+        tx.handled_by = source.from_user.id
+        target_user = tx.user_id
+        await session.commit()
 
     try:
         admin_message = source.message if isinstance(source, CallbackQuery) else None

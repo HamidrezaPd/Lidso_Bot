@@ -142,9 +142,15 @@ async def get_next_config_name(category_prefix: str, volume_tag: str, panel: Pan
 
 
 def volume_tag_from_plan(plan) -> str:
-    """LidsoPrime_10gb_101 یا LidsoUnlimited_1user_101"""
+    """LidsoPrime_10gb_101 یا LidsoUnlimited_2user_101
+
+    برای Unlimited، HWID تعداد واقعی کاربران مجاز را مشخص می‌کند.
+    HWID را در اولویت می‌گذاریم تا حتی پلن‌های قدیمی که max_users آن‌ها
+    به اشتباه 1 مانده، دیگر با نام 1user ساخته نشوند.
+    """
     if plan.category == "LidsoUnlimited" or plan.volume_gb == 0:
-        return f"{plan.max_users}user"
+        user_count = getattr(plan, "hwid_limit", 0) or getattr(plan, "max_users", 1) or 1
+        return f"{user_count}user"
     return f"{plan.volume_gb}gb"
 
 
