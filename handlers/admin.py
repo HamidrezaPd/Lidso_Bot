@@ -285,7 +285,7 @@ async def cb_editplan(callback: CallbackQuery):
     duration_fa = "نامحدود ♾" if plan.duration_days == 0 else f"{plan.duration_days} روز"
     icon_status = "دارد ✅" if plan.icon_custom_emoji_id else "ندارد"
     style_fa = {"primary": "🔵 آبی", "success": "🟢 سبز", "danger": "🔴 قرمز"}.get(plan.style, "پیش‌فرض")
-    volume_fa = f"{plan.volume_gb:,} GB" if plan.volume_gb else "پیش‌فرض Unlimited (300 GB)"
+    volume_fa = f"{plan.volume_gb:,} GB" if plan.volume_gb else "Unlimited واقعی (بدون Data Limit)"
     text = (
         f"🛍 {plan.name}\n\nدسته: {plan.category}\nقیمت: {plan.price:,} تومان\n"
         f"📦 حجم / Data Limit: {volume_fa}\n"
@@ -334,7 +334,7 @@ async def cb_planvolume(callback: CallbackQuery, state: FSMContext):
         "حجم جدید سرویس را به گیگابایت وارد کن.\n\n"
         "مثال: 10 ، 30 ، 50 ، 100 ، 300\n"
         "برای پلن Unlimited هم می‌توانی حجم فنی دلخواه تعیین کنی.\n"
-        "اگر 0 بفرستی، برای Unlimited سقف پیش‌فرض 300GB اعمال می‌شود."
+        "اگر 0 بفرستی، برای Unlimited حجم نامحدود واقعی اعمال می‌شود (بدون Data Limit).\n"
     )
     await state.set_state(ServiceEditStates.waiting_new_volume)
     await callback.answer()
@@ -365,8 +365,8 @@ async def process_new_volume(message: Message, state: FSMContext):
         plan_name = plan.name
         category = plan.category
 
-    shown_volume = 300 if category == "LidsoUnlimited" and new_volume == 0 else new_volume
-    suffix = " (پیش‌فرض فنی Unlimited)" if category == "LidsoUnlimited" and new_volume == 0 else ""
+    shown_volume = new_volume
+    suffix = ""
     await message.answer(
         f"✅ حجم / Data Limit پلن «{plan_name}» به «{shown_volume:,} GB» تغییر کرد{suffix}.",
         reply_markup=admin_main_menu_kb(),
