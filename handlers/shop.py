@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from aiogram import Router
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from database import (
     async_session, User, StockConfig, ServiceOrder, ServicePlan, Panel, WalletTransaction,
@@ -16,9 +16,9 @@ from keyboards.user_kb import (
 )
 from states.user_states import ShopStates
 from ui_texts import AnyButtonText
-from operation_locks import user_operation_lock
 from panels import get_next_config_name, volume_tag_from_plan, create_panel_account
 from submerge import apply_sub_merge
+from operation_locks import user_operation_lock, service_creation_lock
 import config as cfg
 
 logger = logging.getLogger(__name__)
@@ -147,27 +147,29 @@ async def process_purchase(message: Message, state: FSMContext):
     plan_name = message.text.split("|")[0].strip()
     user_id = message.from_user.id
 
-    # فقط قفل داخل همین process برای خریدهای همزمان یک کاربر است.
-    # جلوگیری واقعی از فروش یک موجودی به دو کاربر با UPDATE اتمیک دیتابیس انجام می‌شود.
-    async with user_operation_lock(user_id):
-        async with async_session() as session:
-            plan = await session.scalar(
-                select(ServicePlan).where(
-                    ServicePlan.category == cat,
-                    ServicePlan.duration_id == duration_id,
-                    ServicePlan.name == plan_name,
-                    ServicePlan.active == True,
-                )
+    async with user_operation_lock(user_id), async_session() as session:
+        plan = await session.scalar(
+            select(ServicePlan).where(
+                ServicePlan.category == cat,
+                ServicePlan.duration_id == duration_id,
+                ServicePlan.name == plan_name,
+                ServicePlan.active == True,
             )
-            if not plan:
-                await message.answer("❌ این پلن دیگر موجود نیست.")
-                return
+        )
+        if not plan:
+            await message.answer("❌ این پلن دیگر موجود نیست.")
+            return
 
-            user = await session.scalar(select(User).where(User.user_id == user_id))
-            if not user:
-                await message.answer("❌ اطلاعات حساب شما پیدا نشد. لطفا /start را بزنید.")
-                return
+        user = await session.scalar(select(User).where(User.user_id == user_id))
+        if not user:
+            await message.answer("❌ اطلاعات حساب شما پیدا نشد. لطفا /start را بزنید.")
+            return
 
+        # 🔒 صف ساخت سرویس: درخواست‌های هم‌زمان با یک پیشوند نام مشترک
+        # یکی‌یکی وارد پنل می‌شوند؛ نفر دوم بعد از ساخته‌شدن نفر اول
+        # get_next_config_name() را اجرا می‌کند و شماره بعدی را می‌گیرد.
+        volume_tag = volume_tag_from_plan(plan)
+        async with service_creation_lock(plan.panel_id or 0, cat, volume_tag):
             # ---- اعمال کد تخفیف در صورت وجود ----
             final_price = plan.price
             discount_percent = user.pending_discount_percent
@@ -182,245 +184,160 @@ async def process_purchase(message: Message, state: FSMContext):
                     f"💵 مبلغ مورد نیاز: {final_price:,} تومان\n\n"
                     f"برای افزایش موجودی وارد بخش «کیف پول» شوید."
                 )
+            
+                # خیلی مهم: از حالت انتخاب/خرید سرویس خارج شو
                 await state.clear()
+
                 await message.answer(need_text, reply_markup=await wallet_menu_keyboard())
                 return
 
-            now = datetime.now(timezone.utc)
+            # ---- کسر موجودی و ثبت آمار ----
+            user.balance -= final_price
+            user.total_purchases += 1
+            if plan.volume_gb and plan.volume_gb > 0:
+                user.total_volume += plan.volume_gb
+            else:
+                # پلن نامحدود (volume_gb=0) - توی حجم گیگابایتی حساب نمیشه، تعداد جدا نگه‌داری میشه
+                user.total_unlimited_purchases += 1
+            user.total_spent += final_price
 
-            # ================================================================
-            # بخش حیاتی خرید همزمان:
-            # قبلاً اول SELECT می‌زدیم و بعد status را SOLD می‌کردیم؛ بنابراین
-            # دو درخواست همزمان می‌توانستند یک stock را هر دو ببینند.
-            # این UPDATE اتمیک فقط وقتی انجام می‌شود که هنوز AVAILABLE باشد.
-            # در نتیجه فقط یکی از خریداران همان inventory را می‌گیرد.
-            # ================================================================
-            stock_stmt = (
-                update(StockConfig)
-                .where(
-                    StockConfig.id == (
-                        select(StockConfig.id)
-                        .where(
-                            StockConfig.service_id == plan.id,
-                            StockConfig.status == "AVAILABLE",
-                        )
-                        .order_by(StockConfig.id)
-                        .limit(1)
-                        .scalar_subquery()
-                    ),
+            session.add(WalletTransaction(
+                user_id=user_id, amount=final_price, transaction_type="PURCHASE",
+                method="WALLET", status="SUCCESS", description=plan.name,
+            ))
+
+            if discount_percent:
+                used_promo_code = user.pending_discount_code
+                user.pending_discount_code = None
+                user.pending_discount_percent = None
+                promo_row = await session.scalar(select(DiscountCode).where(DiscountCode.code == used_promo_code))
+                if promo_row:
+                    promo_row.current_uses += 1
+                session.add(UsedDiscount(user_id=user_id, code=used_promo_code))
+
+            # ---- اول انبار رو چک کن ----
+            stock = await session.scalar(
+                select(StockConfig).where(
+                    StockConfig.service_id == plan.id,
                     StockConfig.status == "AVAILABLE",
                 )
-                .values(
-                    status="SOLD",
-                    assigned_user=user_id,
-                    sold_at=now,
-                )
-                .returning(
-                    StockConfig.id,
-                    StockConfig.config_name,
-                    StockConfig.config_link,
-                    StockConfig.panel_id,
-                )
             )
-
-            stock_result = await session.execute(stock_stmt)
-            stock = stock_result.mappings().first()
 
             order = None
 
             if stock:
-                # موجودی با موفقیت به همین کاربر رزرو/فروخته شد.
-                # کسر موجودی و ثبت سفارش در همان transaction انجام می‌شود.
-                user.balance -= final_price
-                user.total_purchases += 1
-                if plan.category != "LidsoUnlimited" and plan.volume_gb and plan.volume_gb > 0:
-                    user.total_volume += plan.volume_gb
-                else:
-                    user.total_unlimited_purchases += 1
-                user.total_spent += final_price
-
-                session.add(WalletTransaction(
-                    user_id=user_id, amount=final_price, transaction_type="PURCHASE",
-                    method="WALLET", status="SUCCESS", description=plan.name,
-                ))
-
-                if discount_percent:
-                    used_promo_code = user.pending_discount_code
-                    user.pending_discount_code = None
-                    user.pending_discount_percent = None
-                    promo_row = await session.scalar(
-                        select(DiscountCode).where(DiscountCode.code == used_promo_code)
-                    )
-                    if promo_row:
-                        promo_row.current_uses += 1
-                    session.add(UsedDiscount(user_id=user_id, code=used_promo_code))
+                stock.status = "SOLD"
+                stock.assigned_user = user_id
+                stock.sold_at = datetime.now(timezone.utc)
 
                 order = ServiceOrder(
-                    user_id=user_id,
-                    plan_id=plan.id,
-                    service_name=plan.name,
-                    config_name=stock["config_name"] or "-",
-                    config_link=stock["config_link"],
-                    price=final_price,
-                    inventory_id=stock["id"],
-                    panel_id=stock["panel_id"],
-                    status="ACTIVE",
-                    expire_at=(
-                        None if plan.duration_days == 0
-                        else now + timedelta(days=plan.duration_days)
-                    ),
+                    user_id=user_id, plan_id=plan.id, service_name=plan.name,
+                    config_name=stock.config_name or "-", config_link=stock.config_link,
+                    price=final_price, inventory_id=stock.id, panel_id=stock.panel_id,
+                    status="ACTIVE", expire_at=(None if plan.duration_days == 0 else datetime.now(timezone.utc) + timedelta(days=plan.duration_days)),
                 )
                 session.add(order)
                 await session.commit()
 
-            else:
-                # هیچ stockای باقی نمانده؛ اینجا دیگر نباید یک stock قبلی را
-                # دوباره به کاربر بدهیم. منطق MANUAL/AUTO قبلی ادامه پیدا می‌کند.
+            elif plan.delivery_mode == "MANUAL":
+                order = ServiceOrder(
+                    user_id=user_id, plan_id=plan.id, service_name=plan.name,
+                    config_name="در حال آماده‌سازی", config_link="در حال آماده‌سازی",
+                    price=final_price, status="PENDING_MANUAL",
+                    expire_at=(None if plan.duration_days == 0 else datetime.now(timezone.utc) + timedelta(days=plan.duration_days)),
+                )
+                session.add(order)
+                await session.commit()
+                await message.answer(
+                    f"✅ سفارش شما ثبت شد!\n\n📦 سرویس: {plan_name}\n"
+                    f"⏳ سرویس شما به زودی توسط پشتیبانی به صورت دستی تحویل داده می‌شود.",
+                    reply_markup=await main_keyboard(),
+                )
+                await _notify_admins_manual_order(message.bot, order.id, plan.name, user_id, message.from_user.username, message.from_user.full_name)
+                await state.clear()
+                return
 
-                # ---- کسر موجودی و ثبت آمار ----
-                user.balance -= final_price
-                user.total_purchases += 1
-                if plan.category != "LidsoUnlimited" and plan.volume_gb and plan.volume_gb > 0:
-                    user.total_volume += plan.volume_gb
+            else:  # AUTO - بساز از پنل
+                panel = await session.get(Panel, plan.panel_id) if plan.panel_id else None
+
+                processing_text = await get_content(session, "order_processing_text",
+                                                     "⏳ سفارش شما در حال آماده‌سازیه، چند لحظه صبر کنید...")
+                progress_msg = await message.answer(processing_text, reply_markup=await main_keyboard())
+
+                config_link = None
+                config_name = None
+                build_error = None
+                phantom_token = None
+
+                if not panel:
+                    build_error = "این پلن به هیچ پنلی وصل نیست."
                 else:
-                    user.total_unlimited_purchases += 1
-                user.total_spent += final_price
+                    volume_tag = volume_tag_from_plan(plan)
+                    config_name = await get_next_config_name(cat, volume_tag, panel)
+                    try:
+                        config_link = await create_panel_account(panel, config_name, plan)
+                        # اعتبارسنجی ساده: اگه چیزی که برگشته اصلاً شبیه لینک نبود، قبولش نکن
+                        if not config_link or not str(config_link).startswith(("http://", "https://", "vless://",
+                                                                                "vmess://", "trojan://", "ss://")):
+                            raise ValueError(f"پاسخ پنل معتبر به نظر نمی‌رسه: {config_link!r}")
 
-                session.add(WalletTransaction(
-                    user_id=user_id, amount=final_price, transaction_type="PURCHASE",
-                    method="WALLET", status="SUCCESS", description=plan.name,
-                ))
+                        config_link, submerge_error = await apply_sub_merge(config_link, plan, config_name, user_id, panel=panel)
+                        # اگه ادغام موفق بود، توکن PhantomHubs رو از URL استخراج می‌کنیم تا بعداً برای حذف داشته باشیم
+                        phantom_token = config_link.split("/token/")[-1] if "/token/" in config_link else None
+                        if submerge_error:
+                            await _notify_admins(
+                                message.bot,
+                                f"⚠️ ادغام ساب برای سفارش کاربر {user_id} fail شد (لینک خام به‌جاش تحویل داده شد):\n\n{submerge_error}"
+                            )
+                    except Exception as e:
+                        build_error = str(e)
+                        logger.error(f"خطا در ساخت کانفیگ از پنل «{panel.name if panel else '-'}»: {e}")
 
-                if discount_percent:
-                    used_promo_code = user.pending_discount_code
-                    user.pending_discount_code = None
-                    user.pending_discount_percent = None
-                    promo_row = await session.scalar(
-                        select(DiscountCode).where(DiscountCode.code == used_promo_code)
-                    )
-                    if promo_row:
-                        promo_row.current_uses += 1
-                    session.add(UsedDiscount(user_id=user_id, code=used_promo_code))
+                try:
+                    await progress_msg.delete()
+                except Exception:
+                    pass
 
-                if plan.delivery_mode == "MANUAL":
+                # اگه بعد از همه‌ی مراحل بالا (حتی بعد از ادغام ساب) بازم لینک خالی/نامعتبر بود،
+                # این آخرین خط دفاعیه قبل از insert - جلوی کرش دیتابیس (NOT NULL constraint) رو می‌گیره
+                if not build_error and (not config_link or not config_name):
+                    build_error = build_error or "بعد از ساخت کانفیگ، لینک یا نام کانفیگ خالی برگشت."
+
+                if build_error:
+                    # ⚠️ کاربر هیچ جزئیات فنی/لینک پنل نمی‌بینه؛ سفارش به‌صورت PENDING_MANUAL ثبت میشه
+                    # تا خودت (ادمین) با /deliver_<id> لینک درست رو دستی بفرستی. مبلغ کسر شده باقی می‌مونه
+                    # چون سفارش لغو نشده، فقط تحویلش به‌صورت دستی تکمیل میشه.
                     order = ServiceOrder(
                         user_id=user_id, plan_id=plan.id, service_name=plan.name,
                         config_name="در حال آماده‌سازی", config_link="در حال آماده‌سازی",
-                        price=final_price, status="PENDING_MANUAL",
-                        expire_at=(
-                            None if plan.duration_days == 0
-                            else now + timedelta(days=plan.duration_days)
-                        ),
+                        price=final_price, panel_id=panel.id if panel else None,
+                        status="PENDING_MANUAL",
+                        expire_at=(None if plan.duration_days == 0 else datetime.now(timezone.utc) + timedelta(days=plan.duration_days)),
                     )
                     session.add(order)
                     await session.commit()
+
                     await message.answer(
                         f"✅ سفارش شما ثبت شد!\n\n📦 سرویس: {plan_name}\n"
-                        f"⏳ سرویس شما به زودی توسط پشتیبانی به صورت دستی تحویل داده می‌شود.",
+                        f"⏳ به دلیل یک مشکل فنی، سرویس شما طی چند دقیقه توسط پشتیبانی به صورت دستی تحویل داده می‌شود.",
                         reply_markup=await main_keyboard(),
                     )
                     await _notify_admins_manual_order(
-                        message.bot, order.id, plan.name, user_id,
-                        message.from_user.username, message.from_user.full_name
+                        message.bot, order.id, plan.name, user_id, message.from_user.username, message.from_user.full_name,
+                        extra=f"⚠️ دلیل نیاز به تحویل دستی: {build_error}"
                     )
                     await state.clear()
                     return
 
-                else:  # AUTO - بساز از پنل
-                    panel = await session.get(Panel, plan.panel_id) if plan.panel_id else None
-
-                    processing_text = await get_content(
-                        session,
-                        "order_processing_text",
-                        "⏳ سفارش شما در حال آماده‌سازیه، چند لحظه صبر کنید..."
-                    )
-                    progress_msg = await message.answer(
-                        processing_text,
-                        reply_markup=await main_keyboard()
-                    )
-
-                    config_link = None
-                    config_name = None
-                    build_error = None
-                    phantom_token = None
-
-                    if not panel:
-                        build_error = "این پلن به هیچ پنلی وصل نیست."
-                    else:
-                        volume_tag = volume_tag_from_plan(plan)
-                        config_name = await get_next_config_name(cat, volume_tag, panel)
-                        try:
-                            config_link = await create_panel_account(panel, config_name, plan)
-                            if not config_link or not str(config_link).startswith((
-                                "http://", "https://", "vless://", "vmess://", "trojan://", "ss://"
-                            )):
-                                raise ValueError(f"پاسخ پنل معتبر به نظر نمی‌رسه: {config_link!r}")
-
-                            config_link, submerge_error = await apply_sub_merge(
-                                config_link, plan, config_name, user_id, panel=panel
-                            )
-                            phantom_token = (
-                                config_link.split("/token/")[-1]
-                                if "/token/" in config_link else None
-                            )
-                            if submerge_error:
-                                await _notify_admins(
-                                    message.bot,
-                                    f"⚠️ ادغام ساب برای سفارش کاربر {user_id} fail شد (لینک خام به‌جاش تحویل داده شد):\n\n{submerge_error}"
-                                )
-                        except Exception as e:
-                            build_error = str(e)
-                            logger.error(
-                                f"خطا در ساخت کانفیگ از پنل «{panel.name if panel else '-'}»: {e}"
-                            )
-
-                    try:
-                        await progress_msg.delete()
-                    except Exception:
-                        pass
-
-                    if not build_error and (not config_link or not config_name):
-                        build_error = build_error or "بعد از ساخت کانفیگ، لینک یا نام کانفیگ خالی برگشت."
-
-                    if build_error:
-                        order = ServiceOrder(
-                            user_id=user_id, plan_id=plan.id, service_name=plan.name,
-                            config_name="در حال آماده‌سازی", config_link="در حال آماده‌سازی",
-                            price=final_price, panel_id=panel.id if panel else None,
-                            status="PENDING_MANUAL",
-                            expire_at=(
-                                None if plan.duration_days == 0
-                                else now + timedelta(days=plan.duration_days)
-                            ),
-                        )
-                        session.add(order)
-                        await session.commit()
-
-                        await message.answer(
-                            f"✅ سفارش شما ثبت شد!\n\n📦 سرویس: {plan_name}\n"
-                            f"⏳ به دلیل یک مشکل فنی، سرویس شما طی چند دقیقه توسط پشتیبانی به صورت دستی تحویل داده می‌شود.",
-                            reply_markup=await main_keyboard(),
-                        )
-                        await _notify_admins_manual_order(
-                            message.bot, order.id, plan.name, user_id,
-                            message.from_user.username, message.from_user.full_name,
-                            extra=f"⚠️ دلیل نیاز به تحویل دستی: {build_error}"
-                        )
-                        await state.clear()
-                        return
-
-                    order = ServiceOrder(
-                        user_id=user_id, plan_id=plan.id, service_name=plan.name,
-                        config_name=config_name, config_link=config_link,
-                        price=final_price, panel_id=panel.id, status="ACTIVE",
-                        phantom_token=phantom_token,
-                        expire_at=(
-                            None if plan.duration_days == 0
-                            else now + timedelta(days=plan.duration_days)
-                        ),
-                    )
-                    session.add(order)
-                    await session.commit()
+                order = ServiceOrder(
+                    user_id=user_id, plan_id=plan.id, service_name=plan.name,
+                    config_name=config_name, config_link=config_link,
+                    price=final_price, panel_id=panel.id, status="ACTIVE",
+                    phantom_token=phantom_token,
+                    expire_at=(None if plan.duration_days == 0 else datetime.now(timezone.utc) + timedelta(days=plan.duration_days)),
+                )
+                session.add(order)
+                await session.commit()
 
             caption = (
                 f"🎉 خرید با موفقیت انجام شد!\n\n"
@@ -438,14 +355,8 @@ async def process_purchase(message: Message, state: FSMContext):
                     reply_markup=await main_keyboard(),
                 )
             except Exception as e:
-                logging.getLogger(__name__).warning(
-                    f"ساخت QR کد برای سفارش {order.id} fail شد: {e}"
-                )
-                await message.answer(
-                    caption,
-                    parse_mode="Markdown",
-                    reply_markup=await main_keyboard()
-                )
+                logging.getLogger(__name__).warning(f"ساخت QR کد برای سفارش {order.id} fail شد: {e}")
+                await message.answer(caption, parse_mode="Markdown", reply_markup=await main_keyboard())
 
             await _notify_admins(
                 message.bot,
@@ -457,5 +368,4 @@ async def process_purchase(message: Message, state: FSMContext):
                 f"نام کانفیگ: {order.config_name}\nشماره سفارش: #{order.id}",
             )
 
-        await state.clear()
-
+    await state.clear()
