@@ -156,7 +156,7 @@ async def process_purchase(message: Message, state: FSMContext):
     user_id = message.from_user.id
 
     # Snapshot کردن state و آزاد کردن FSM قبل از هر عملیات طولانی.
-    await state.clear()
+    # await state.clear()
 
     order_id = None
     plan_id = None
