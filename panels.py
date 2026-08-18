@@ -273,27 +273,9 @@ async def _marzban_create(panel: Panel, config_name: str, plan) -> str:
         )
 
         if resp.status_code == 409:
-            # 409 یعنی این username از قبل توی پنل وجود داره (مثلا یه بار قبلاً با موفقیت ساخته
-            # شده ولی فقط گرفتن جواب/لینکش fail شده بود). به‌جای خطا دادن، مستقیم اطلاعاتشو می‌گیریم.
-            try:
-                result = await _marzban_get_user(panel, config_name)
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 403:
-                    # این یعنی username از قبل روی پنل وجود داره ولی حساب متصل‌شده (username/password
-                    # که توی تنظیمات پنل دادی) اجازه‌ی دیدن این کاربر رو نداره - مثلاً چون یه ادمین
-                    # دیگه (نه ادمین اصلی/sudo) ساختتش، یا این username قبلاً دستی روی پنل ساخته شده.
-                    raise ValueError(
-                        f"یوزرنیم «{config_name}» از قبل روی پنل Marzban وجود داره، ولی حساب متصل‌شده "
-                        f"به این پنل توی بات (username/password تنظیمات پنل) اجازه‌ی مشاهده‌ش رو نداره "
-                        f"(403 Forbidden). این معمولاً یعنی حساب پنل باید سطح دسترسی sudo/admin کامل داشته "
-                        f"باشه، یا این یوزرنیم قبلاً با یه حساب ادمین دیگه ساخته شده. لطفاً حساب متصل‌شده "
-                        f"به این پنل رو با یه حساب ادمین sudo (نه ادمین محدود) عوض کن."
-                    )
-                raise
-            raw_link = result.get("subscription_url") or (result.get("links") or [""])[0]
-            if not raw_link:
-                raise ValueError(f"پنل Marzban لینک اشتراکی برای کاربر {config_name} برنگردوند.")
-            return _fix_subscription_link(panel, raw_link)
+            # بسیار مهم: هرگز در برخورد با collision اطلاعات کاربر قبلی را برنگردان.
+            # این کار می‌توانست سرویس کاربر قبلی را به خریدار جدید تحویل بدهد.
+            raise ValueError(f"__CONFIG_NAME_COLLISION__: یوزرنیم {config_name} از قبل روی پنل وجود دارد.")
 
         if resp.status_code == 422:
             raise ValueError(f"داده‌های ارسالی به پنل نامعتبره (422). پاسخ پنل: {resp.text[:300]}")
@@ -420,11 +402,8 @@ async def _pasarguard_create(panel: Panel, config_name: str, plan) -> str:
         )
 
         if resp.status_code == 409:
-            result = await _pasarguard_get_user(panel, config_name)
-            raw_link = result.get("subscription_url") or (result.get("links") or [""])[0]
-            if not raw_link:
-                raise ValueError(f"پنل PasarGuard لینک اشتراکی برای کاربر {config_name} برنگردوند.")
-            return _fix_subscription_link(panel, raw_link)
+            # هرگز لینک کاربر موجود را در پاسخ 409 تحویل نده.
+            raise ValueError(f"__CONFIG_NAME_COLLISION__: یوزرنیم {config_name} از قبل روی پنل وجود دارد.")
 
         resp.raise_for_status()
         result = resp.json()

@@ -147,11 +147,9 @@ async def process_purchase(message: Message, state: FSMContext):
     plan_name = message.text.split("|")[0].strip()
     user_id = message.from_user.id
 
-    # خرید را از FSM انتخاب پلن خارج می‌کنیم بلافاصله بعد از انتخاب پلن.
-    # ساخت کانفیگ ممکن است چند ثانیه طول بکشد؛ اگر کاربر در این فاصله
-    # روی یکی از دکمه‌های منو بزند، نباید state جدید او در پایان خرید
-    # با state.clear() پاک شود.
-    await state.clear()
+    # خرید را از FSM جدا می‌کنیم تا کاربر در زمان ساخت سرویس قفل نشود.
+    # از این لحظه به بعد تمام اطلاعات لازم از همین درخواست snapshot شده و
+    # state خرید دیگر نباید روی پیام‌ها/دکمه‌های بعدی اثر بگذارد.
 
     async with user_operation_lock(user_id), async_session() as session:
         plan = await session.scalar(
@@ -191,9 +189,6 @@ async def process_purchase(message: Message, state: FSMContext):
                     f"برای افزایش موجودی وارد بخش «کیف پول» شوید."
                 )
             
-                # خیلی مهم: از حالت انتخاب/خرید سرویس خارج شو
-                await state.clear()
-
                 await message.answer(need_text, reply_markup=await wallet_menu_keyboard())
                 return
 
@@ -260,7 +255,6 @@ async def process_purchase(message: Message, state: FSMContext):
                     reply_markup=await main_keyboard(),
                 )
                 await _notify_admins_manual_order(message.bot, order.id, plan.name, user_id, message.from_user.username, message.from_user.full_name)
-                await state.clear()
                 return
 
             else:  # AUTO - بساز از پنل
@@ -279,25 +273,51 @@ async def process_purchase(message: Message, state: FSMContext):
                     build_error = "این پلن به هیچ پنلی وصل نیست."
                 else:
                     volume_tag = volume_tag_from_plan(plan)
-                    config_name = await get_next_config_name(cat, volume_tag, panel)
-                    try:
-                        config_link = await create_panel_account(panel, config_name, plan)
-                        # اعتبارسنجی ساده: اگه چیزی که برگشته اصلاً شبیه لینک نبود، قبولش نکن
-                        if not config_link or not str(config_link).startswith(("http://", "https://", "vless://",
-                                                                                "vmess://", "trojan://", "ss://")):
-                            raise ValueError(f"پاسخ پنل معتبر به نظر نمی‌رسه: {config_link!r}")
+                    # حتی اگر لیست پنل به‌خاطر سطح دسترسی ناقص باشد، collision نباید
+                    # باعث تحویل لینک کاربر قبلی شود. در صورت 409 چند نام بعدی را امتحان می‌کنیم.
+                    collision_error = ""
+                    for attempt in range(5):
+                        if attempt == 0:
+                            config_name = await get_next_config_name(cat, volume_tag, panel)
+                        else:
+                            try:
+                                prefix, num_text = config_name.rsplit("_", 1)
+                                config_name = f"{prefix}_{int(num_text) + 1}"
+                            except (ValueError, AttributeError):
+                                config_name = await get_next_config_name(cat, volume_tag, panel)
 
-                        config_link, submerge_error = await apply_sub_merge(config_link, plan, config_name, user_id, panel=panel)
-                        # اگه ادغام موفق بود، توکن PhantomHubs رو از URL استخراج می‌کنیم تا بعداً برای حذف داشته باشیم
-                        phantom_token = config_link.split("/token/")[-1] if "/token/" in config_link else None
-                        if submerge_error:
-                            await _notify_admins(
-                                message.bot,
-                                f"⚠️ ادغام ساب برای سفارش کاربر {user_id} fail شد (لینک خام به‌جاش تحویل داده شد):\n\n{submerge_error}"
+                        try:
+                            config_link = await create_panel_account(panel, config_name, plan)
+                            if not config_link or not str(config_link).startswith(("http://", "https://", "vless://",
+                                                                                    "vmess://", "trojan://", "ss://")):
+                                raise ValueError(f"پاسخ پنل معتبر به نظر نمی‌رسه: {config_link!r}")
+
+                            config_link, submerge_error = await apply_sub_merge(
+                                config_link, plan, config_name, user_id, panel=panel
                             )
-                    except Exception as e:
-                        build_error = str(e)
-                        logger.error(f"خطا در ساخت کانفیگ از پنل «{panel.name if panel else '-'}»: {e}")
+                            phantom_token = config_link.split("/token/")[-1] if "/token/" in config_link else None
+                            if submerge_error:
+                                await _notify_admins(
+                                    message.bot,
+                                    f"⚠️ ادغام ساب برای سفارش کاربر {user_id} fail شد (لینک خام به‌جاش تحویل داده شد):\n\n{submerge_error}"
+                                )
+                            build_error = None
+                            break
+                        except Exception as e:
+                            error_text = str(e)
+                            if "__CONFIG_NAME_COLLISION__" in error_text:
+                                collision_error = error_text
+                                logger.warning(
+                                    f"⚠️ collision برای نام {config_name} روی پنل «{panel.name}»، "
+                                    f"تلاش بعدی ({attempt + 1}/5)"
+                                )
+                                build_error = error_text
+                                continue
+                            build_error = error_text
+                            logger.error(f"خطا در ساخت کانفیگ از پنل «{panel.name if panel else '-'}»: {e}")
+                            break
+                    else:
+                        build_error = collision_error or build_error or "ساخت کانفیگ پس از چند تلاش ناموفق بود."
 
                 try:
                     await progress_msg.delete()
@@ -332,7 +352,6 @@ async def process_purchase(message: Message, state: FSMContext):
                         message.bot, order.id, plan.name, user_id, message.from_user.username, message.from_user.full_name,
                         extra=f"⚠️ دلیل نیاز به تحویل دستی: {build_error}"
                     )
-                    await state.clear()
                     return
 
                 order = ServiceOrder(
@@ -373,3 +392,4 @@ async def process_purchase(message: Message, state: FSMContext):
                 f"سرویس: {plan_name}\nقیمت: {final_price:,} تومان\n"
                 f"نام کانفیگ: {order.config_name}\nشماره سفارش: #{order.id}",
             )
+

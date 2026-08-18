@@ -59,7 +59,6 @@ async def main():
     dp.message.middleware(ChannelMembershipMiddleware())
     dp.callback_query.middleware(ChannelMembershipMiddleware())
 
-
     # user_router اول چک میشه تا /start و ناوبری اصلی همیشه قطعی کار کنن، حتی اگه یه جای دیگه
     # (مثلاً یه متن دکمه‌ی دیگه) به‌اشتباه با یه فرمان قاطی بشه
     dp.include_router(user_router)
