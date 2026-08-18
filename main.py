@@ -17,7 +17,7 @@ from handlers.shop import router as shop_router
 from handlers.wallet import router as wallet_router
 from handlers.admin import router as admin_router
 from handlers.trial import router as trial_router
-from middleware import ChannelMembershipMiddleware, UserCooldownMiddleware
+from middleware import ChannelMembershipMiddleware
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -59,12 +59,6 @@ async def main():
     dp.message.middleware(ChannelMembershipMiddleware())
     dp.callback_query.middleware(ChannelMembershipMiddleware())
 
-    # امنیت درخواست‌ها: cooldown دو ثانیه‌ای + تشخیص تکرار غیرعادی همان درخواست.
-    # ۱۰ تکرار دقیقاً یک درخواست در ۲۰ ثانیه => محدودیت موقت ۶۰ ثانیه‌ای.
-    # ادمین‌ها مستثنا هستند. این middleware قبل از handlerها اجرا می‌شود و دیتابیس را تغییر نمی‌دهد.
-    cooldown_middleware = UserCooldownMiddleware()
-    dp.message.middleware(cooldown_middleware)
-    dp.callback_query.middleware(cooldown_middleware)
 
     # user_router اول چک میشه تا /start و ناوبری اصلی همیشه قطعی کار کنن، حتی اگه یه جای دیگه
     # (مثلاً یه متن دکمه‌ی دیگه) به‌اشتباه با یه فرمان قاطی بشه

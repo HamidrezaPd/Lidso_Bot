@@ -147,6 +147,12 @@ async def process_purchase(message: Message, state: FSMContext):
     plan_name = message.text.split("|")[0].strip()
     user_id = message.from_user.id
 
+    # خرید را از FSM انتخاب پلن خارج می‌کنیم بلافاصله بعد از انتخاب پلن.
+    # ساخت کانفیگ ممکن است چند ثانیه طول بکشد؛ اگر کاربر در این فاصله
+    # روی یکی از دکمه‌های منو بزند، نباید state جدید او در پایان خرید
+    # با state.clear() پاک شود.
+    await state.clear()
+
     async with user_operation_lock(user_id), async_session() as session:
         plan = await session.scalar(
             select(ServicePlan).where(
@@ -367,5 +373,3 @@ async def process_purchase(message: Message, state: FSMContext):
                 f"سرویس: {plan_name}\nقیمت: {final_price:,} تومان\n"
                 f"نام کانفیگ: {order.config_name}\nشماره سفارش: #{order.id}",
             )
-
-    await state.clear()
