@@ -6,3 +6,5 @@ venv/
 .venv/
 
 .locks/
+middleware.py.before_rollback
+middleware.py.broken_backup_20260812_024018
