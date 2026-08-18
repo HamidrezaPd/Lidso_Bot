@@ -1,7 +1,7 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 
 from database import (
     async_session, User, ServicePlan, StockConfig, Panel, DiscountCode,
@@ -2241,16 +2241,45 @@ async def broadcast_cancel(callback: CallbackQuery, state: FSMContext):
 async def cb_tx_approve(callback: CallbackQuery):
     tx_id = int(callback.data.split("_")[-1])
     async with async_session() as session:
+        # عملیات تایید باید اتمیک باشد؛ دو کلیک همزمان نباید بتوانند
+        # یک تراکنش PENDING را هر دو تایید کنند و موجودی را دوبار افزایش دهند.
         tx = await session.get(WalletTransaction, tx_id)
-        if not tx or tx.status != "PENDING":
+        if not tx:
+            await callback.answer("این تراکنش پیدا نشد.", show_alert=True)
+            return
+
+        amount, target_user = tx.amount, tx.user_id
+
+        result = await session.execute(
+            update(WalletTransaction)
+            .where(
+                WalletTransaction.id == tx_id,
+                WalletTransaction.status == "PENDING",
+            )
+            .values(
+                status="SUCCESS",
+                handled_by=callback.from_user.id,
+            )
+        )
+
+        # فقط همان درخواست اولی که PENDING را به SUCCESS تبدیل کرده
+        # اجازه دارد موجودی را افزایش دهد.
+        if result.rowcount != 1:
+            await session.rollback()
             await callback.answer("این تراکنش قبلاً پردازش شده.", show_alert=True)
             return
-        user = await session.scalar(select(User).where(User.user_id == tx.user_id))
-        user.balance += tx.amount
-        tx.status = "SUCCESS"
-        tx.handled_by = callback.from_user.id
+
+        balance_result = await session.execute(
+            update(User)
+            .where(User.user_id == target_user)
+            .values(balance=User.balance + amount)
+        )
+        if balance_result.rowcount != 1:
+            await session.rollback()
+            await callback.answer("❌ حساب کاربر پیدا نشد؛ تراکنش تایید نشد.", show_alert=True)
+            return
+
         await session.commit()
-        amount, target_user = tx.amount, tx.user_id
 
     try:
         if callback.message.photo:
